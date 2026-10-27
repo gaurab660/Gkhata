@@ -27,6 +27,11 @@ jobs:
           unzip -q -o gkhata-source.zip
           ls
 
+      - name: Fix paste (captureInput off)
+        run: |
+          sed -i 's/"captureInput": true/"captureInput": false/' capacitor.config.json
+          grep captureInput capacitor.config.json
+
       - name: Fix MainActivity (onResume/onPause must be public)
         run: sed -i 's/@Override protected void onResume()/@Override public void onResume()/; s/@Override protected void onPause()/@Override public void onPause()/' native/MainActivity.java
 
@@ -97,3 +102,4 @@ jobs:
           name: dairy-order-debug
           path: android/app/build/outputs/apk/debug/app-debug.apk
           retention-days: 7
+          
