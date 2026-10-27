@@ -1,0 +1,17 @@
+node_modules/
+android/
+bridge.js
+
+# --- NEVER commit signing material or secrets ---
+*.jks
+*.keystore
+*.p12
+keystore.properties
+local.properties
+.env
+.env.*
+
+# build outputs
+*.apk
+*.aab
+*.idsig

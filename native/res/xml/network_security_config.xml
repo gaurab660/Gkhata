@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- No plain HTTP anywhere, and only the phone's built-in CAs are trusted
+     (a CA installed by a user/attacker on the phone cannot be used to read the traffic). -->
+<network-security-config>
+    <base-config cleartextTrafficPermitted="false">
+        <trust-anchors>
+            <certificates src="system" />
+        </trust-anchors>
+    </base-config>
+</network-security-config>

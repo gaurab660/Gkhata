@@ -1,0 +1,2 @@
+{ "appId": "com.dairy.orderapp", "appName": "GKhata", "webDir": "www", "loggingBehavior": "none",
+  "android": { "allowMixedContent": false, "webContentsDebuggingEnabled": false, "captureInput": true } }
