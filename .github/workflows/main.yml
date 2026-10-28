@@ -1,21 +1,25 @@
 # ============================================================
-#  GKhata - Android APK build  (improved)
-#  Put ONLY this file in .github/workflows/
+#  GKhata - Android APK build
+#  Place this file at:  .github/workflows/build-apk.yml
 #
-#  Upload to the repo root (web upload is enough, any mix works):
-#    gkhata-source.zip     base source (whole project)
-#    update*.zip           later changes, applied in name order
-#    index.html            -> www/index.html
-#    *.java                -> native/
-#    AndroidManifest.xml   -> native/AndroidManifest.xml
-#    version.txt           one line, e.g. 1.0.2
+#  Repo layout this workflow expects (matches your repo):
+#    native/            *.java, AndroidManifest.xml, res/ (icons, splash, xml)
+#    www/               index.html (the app UI)
+#    tools/             make-icons.py, make-keystore.sh, out/ ...
+#    setup.sh  package.json  package-lock.json  capacitor.config.json
+#    gkhata-source.zip  (optional backup source; real folders win over the zip)
+#    update*.zip        (optional later changes, applied in name order)
+#    index.html / *.java / AndroidManifest.xml in repo root
+#        -> copied into www/ and native/ automatically
+#    version.txt        (optional) one line, e.g. 1.0.2
 #
 #  Secrets (optional): KEYSTORE_B64, KS_PASS, KEY_PASS, KEY_ALIAS (default "dairy")
-#      -> signed RELEASE apk. Without them a DEBUG apk is built.
+#      -> signed RELEASE apk.  Without them a DEBUG apk is built.
 #  Variable (optional): VERSION_CODE_BASE
 #
-#  Manual run: Actions > Build Android APK > Run workflow
-#  Output: Releases > APK (+ .sha256) ; also Actions > run > Artifacts
+#  Output: Releases page (APK + .sha256) and Actions > run > Artifacts.
+#  The run Summary page shows version, size, SHA-256, certificate,
+#  permissions and, on failure, the error lines.
 # ============================================================
 name: Build Android APK
 
@@ -34,7 +38,7 @@ on:
         required: false
         default: ''
       release_mode:
-        description: "Releases page: latest = replace one 'latest' release, versioned = keep every build, none = Artifacts only"
+        description: "Releases page: latest = one replaced release, versioned = keep every build, none = Artifacts only"
         type: choice
         options: [latest, versioned, none]
         default: latest
@@ -65,7 +69,7 @@ jobs:
       - uses: actions/checkout@v6
 
       # ---------- 1. Source ----------
-      - name: Prepare source (zips + loose files)
+      - name: Prepare source (repo folders + optional zips)
         run: |
           set -euo pipefail
           STAGE="$RUNNER_TEMP/stage"; mkdir -p "$STAGE"
@@ -88,6 +92,7 @@ jobs:
           }
           if [ -f gkhata-source.zip ]; then unpack gkhata-source.zip; echo "base: gkhata-source.zip"; fi
           for z in $(ls update*.zip 2>/dev/null | sort -V); do unpack "$z"; echo "update: $z"; done
+          # real files in the repo win over files from zips
           cp -a --update=none "$STAGE"/. . || true
           mkdir -p www native
           if [ -f index.html ]; then cp -f index.html www/index.html; echo "index.html -> www/"; fi
@@ -98,16 +103,22 @@ jobs:
             [ -f "$need" ] || MISSING="$MISSING $need"
           done
           if [ -n "$MISSING" ]; then
-            echo "::error::Missing:$MISSING  ->  upload gkhata-source.zip (the whole project) to the repo root first"
+            echo "::error::Missing:$MISSING  ->  upload the whole project (or gkhata-source.zip) to the repo root"
             {
               echo "## Source files missing"
-              echo "These files were not found:"
               for m in $MISSING; do echo "- \`$m\`"; done
               echo
-              echo "**Fix:** upload \`gkhata-source.zip\` (whole project) to the repository root, then run again."
+              echo "**Fix:** upload the missing files (or the whole \`gkhata-source.zip\`) to the repository root, then run again."
             } >> "$GITHUB_STEP_SUMMARY"
             exit 1
           fi
+          {
+            echo "### Project files found"
+            echo "- Java files in native/: $(ls native/*.java 2>/dev/null | wc -l)"
+            echo "- Icons/resources in native/res: $(find native/res -type f 2>/dev/null | wc -l)"
+            echo "- www/ files: $(find www -type f 2>/dev/null | wc -l)"
+          } >> "$GITHUB_STEP_SUMMARY"
+          [ -f native/res/mipmap-xxxhdpi/ic_launcher.png ] || echo "::warning::native/res/mipmap-xxxhdpi/ic_launcher.png missing - the app may get the default icon"
 
       - name: Safety patches (harmless if already fixed)
         run: |
@@ -137,6 +148,7 @@ jobs:
       - uses: actions/setup-node@v6
         with:
           node-version: 22
+          cache: npm
 
       # ---------- 3. Fast checks ----------
       - name: Pre-build checks (fail in seconds instead of after the Gradle build)
@@ -204,11 +216,12 @@ jobs:
           VERSION_CODE: ${{ steps.ver.outputs.code }}
         run: |
           set -euo pipefail
+          rm -rf android   # setup.sh runs "npx cap add android", which fails if android/ already exists
           bash setup.sh
-          [ -d android ] || { echo "::error::setup.sh finished but android/ folder was not created - check setup.sh"; exit 1; }
+          [ -d android ] || { echo "::error::setup.sh finished but android/ was not created - check setup.sh"; exit 1; }
           [ -f android/gradlew ] || { echo "::error::android/gradlew not found - setup.sh did not create a Gradle project"; exit 1; }
 
-      # FIX: setup-gradle now runs AFTER android/ exists (this was the cause of the failure)
+      # IMPORTANT: runs AFTER android/ exists (this fixes "No file matched [**/*.gradle*...]")
       - uses: gradle/actions/setup-gradle@v6
         with:
           cache-provider: basic
@@ -300,7 +313,7 @@ jobs:
             echo "| Android | min SDK $MIN, target SDK $TGT |"
             echo "| SHA-256 | \`$SHA\` |"
             echo "| Signing certificate | \`$CERT\` |"
-            echo "| Source files | $(tr '\n' ' ' < "$RUNNER_TEMP/applied.txt") |"
+            echo "| Source zips used | $(tr '\n' ' ' < "$RUNNER_TEMP/applied.txt") |"
             echo
             echo "The signing certificate must be identical in every build, otherwise Android refuses the update."
             if [ "$BUILD_TYPE" = debug ]; then
@@ -416,3 +429,4 @@ jobs:
           path: build.log
           if-no-files-found: ignore
           retention-days: 7
+          
