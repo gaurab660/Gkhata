@@ -1,12 +1,27 @@
+# GKhata - Android APK build (the ONLY file you ever need to put in .github/workflows/)
+#
+# What you can put in the repo (web upload, no folders needed). Any mix works:
+#   gkhata-source.zip        base source (whole project)
+#   update*.zip              later changes, applied in name order on top of the base (update1.zip, update2.zip ...)
+#   index.html               -> replaces www/index.html (the whole app screen/logic)
+#   *.java                   -> copied into native/ (CallReceiver.java, MainActivity.java ...)
+#   AndroidManifest.xml      -> replaces native/AndroidManifest.xml
+#   version.txt              one line, e.g. 1.0.2 -> app version name (default: version in package.json)
+#   (or real folders: www/ native/ tools/ ... - files in the repo itself always win over the zips)
+# Priority (low -> high): gkhata-source.zip < update*.zip < files/folders in the repo < root index.html/*.java/AndroidManifest.xml
+#
+# Output: Releases page -> "latest" -> GKhata-<version>-<debug|release>.apk  (direct .apk, no zip to unpack)
+#         also Actions -> run -> Artifacts. If a build fails, the run's Summary page shows the error lines.
 name: Build Android APK
 
 on:
   push:
     branches: [main, master]
+    paths-ignore: ['**.md']
   workflow_dispatch:
 
 permissions:
-  contents: read            # the workflow can read the repo, nothing else
+  contents: write          # needed only to publish the APK on the Releases page (keep the repo PRIVATE)
 
 concurrency:
   group: build-apk
@@ -15,31 +30,49 @@ concurrency:
 jobs:
   build:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 40
     env:
       HAS_KEYSTORE: ${{ secrets.KEYSTORE_B64 != '' }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
-      # The repo holds ONE file (gkhata-source.zip) - unpack it here, then build as usual
-      - name: Unpack gkhata-source.zip
+      - name: Prepare source (zips + loose files)
         run: |
-          unzip -q -o gkhata-source.zip
-          ls
+          set -euo pipefail
+          STAGE="$RUNNER_TEMP/stage"; mkdir -p "$STAGE"
+          if [ -f gkhata-source.zip ]; then unzip -q -o gkhata-source.zip -d "$STAGE"; echo "base: gkhata-source.zip"; fi
+          for z in $(ls update*.zip 2>/dev/null | sort -V); do unzip -q -o "$z" -d "$STAGE"; echo "update: $z"; done
+          # zips fill in only what the repo itself does not already have
+          cp -a --update=none "$STAGE"/. . || true
+          # loose files at the repo root are routed to the right place (these always win)
+          mkdir -p www native
+          [ -f index.html ] && cp -f index.html www/index.html && echo "index.html -> www/"
+          for f in *.java; do [ -f "$f" ] && cp -f "$f" native/ && echo "$f -> native/"; done
+          [ -f AndroidManifest.xml ] && cp -f AndroidManifest.xml native/ && echo "AndroidManifest.xml -> native/"
+          for need in setup.sh package.json capacitor.config.json www/index.html native/MainActivity.java native/AndroidManifest.xml; do
+            [ -f "$need" ] || { echo "::error::Missing $need - upload gkhata-source.zip first"; exit 1; }
+          done
 
-      - name: Fix paste (captureInput off)
+      - name: Safety patches (harmless if already fixed)
         run: |
+          set -e
+          # Capacitor's captureInput breaks paste on some keyboards
           sed -i 's/"captureInput": true/"captureInput": false/' capacitor.config.json
-          grep captureInput capacitor.config.json
+          # onResume/onPause must be public in BridgeActivity subclasses
+          sed -i 's/@Override protected void onResume()/@Override public void onResume()/; s/@Override protected void onPause()/@Override public void onPause()/' native/MainActivity.java
 
-      - name: Fix MainActivity (onResume/onPause must be public)
-        run: sed -i 's/@Override protected void onResume()/@Override public void onResume()/; s/@Override protected void onPause()/@Override public void onPause()/' native/MainActivity.java
+      - name: Version
+        id: ver
+        run: |
+          VN=$( [ -f version.txt ] && tr -d ' \r\n' < version.txt || node -p "require('./package.json').version" )
+          echo "name=$VN" >> "$GITHUB_OUTPUT"
+          echo "Version: $VN  (versionCode = run #${{ github.run_number }})"
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v5
         with:
           node-version: 20
 
-      - uses: actions/setup-java@v4
+      - uses: actions/setup-java@v5
         with:
           distribution: temurin
           java-version: 17
@@ -47,22 +80,40 @@ jobs:
       - uses: gradle/actions/setup-gradle@v4
 
       - name: Create Android project and copy native code
+        env:
+          VERSION_NAME: ${{ steps.ver.outputs.name }}
         run: bash setup.sh
 
-      # ---------- SIGNED RELEASE (when the 3 secrets exist) ----------
-      - name: Build release APK
-        if: env.HAS_KEYSTORE == 'true'
+      - name: Build APK
+        id: build
         working-directory: android
         run: |
           chmod +x gradlew
-          ./gradlew assembleRelease --no-daemon
+          if [ "$HAS_KEYSTORE" = "true" ]; then TASK=assembleRelease; else TASK=assembleDebug; fi
+          set -o pipefail
+          ./gradlew $TASK --no-daemon --console=plain 2>&1 | tee "$GITHUB_WORKSPACE/build.log"
 
-      - name: Align + sign + verify
+      - name: Show errors on the Summary page
+        if: failure()
+        run: |
+          {
+            echo "## Build failed - error lines"
+            echo '```'
+            grep -n -E "error:|warning: \[|What went wrong|FAILED|Could not|Execution failed|cannot find symbol" -A4 build.log | head -80 || true
+            echo '```'
+            echo "(last 40 lines of log)"
+            echo '```'
+            tail -40 build.log
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Sign release APK
         if: env.HAS_KEYSTORE == 'true'
         env:
           KEYSTORE_B64: ${{ secrets.KEYSTORE_B64 }}
           KS_PASS: ${{ secrets.KS_PASS }}
           KEY_PASS: ${{ secrets.KEY_PASS }}
+          VN: ${{ steps.ver.outputs.name }}
         run: |
           set -euo pipefail
           BT=$(ls -d "$ANDROID_HOME"/build-tools/* | sort -V | tail -1)
@@ -71,35 +122,39 @@ jobs:
           "$BT/zipalign" -p 4 "$UNSIGNED" "$RUNNER_TEMP/aligned.apk"
           "$BT/apksigner" sign --ks "$RUNNER_TEMP/release.jks" --ks-key-alias dairy \
             --ks-pass env:KS_PASS --key-pass env:KEY_PASS --min-sdk-version 24 \
-            --out dairy-order-release.apk "$RUNNER_TEMP/aligned.apk"
+            --out "GKhata-$VN-release.apk" "$RUNNER_TEMP/aligned.apk"
           rm -f "$RUNNER_TEMP/release.jks"
-          "$BT/apksigner" verify --verbose --print-certs dairy-order-release.apk | tee verify.txt
+          "$BT/apksigner" verify --verbose --print-certs "GKhata-$VN-release.apk" | tee verify.txt
           grep -q "Verified using v2 scheme (APK Signature Scheme v2): true" verify.txt
-          sha256sum dairy-order-release.apk | tee dairy-order-release.apk.sha256
+          sha256sum "GKhata-$VN-release.apk" | tee "GKhata-$VN-release.apk.sha256"
 
-      - name: Upload signed APK
-        if: env.HAS_KEYSTORE == 'true'
+      - name: Name debug APK
+        if: env.HAS_KEYSTORE != 'true'
+        run: cp android/app/build/outputs/apk/debug/app-debug.apk "GKhata-${{ steps.ver.outputs.name }}-debug.apk"
+
+      - name: Upload APK (Artifacts)
         uses: actions/upload-artifact@v4
         with:
-          name: dairy-order-release
-          path: |
-            dairy-order-release.apk
-            dairy-order-release.apk.sha256
+          name: GKhata-${{ steps.ver.outputs.name }}-${{ env.HAS_KEYSTORE == 'true' && 'release' || 'debug' }}
+          path: GKhata-*.apk*
           retention-days: 30
 
-      # ---------- DEBUG FALLBACK (no secrets yet) ----------
-      - name: Build debug APK (no keystore secrets set - NOT for daily use)
-        if: env.HAS_KEYSTORE != 'true'
-        working-directory: android
+      - name: Publish on Releases page (direct .apk link)
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
-          chmod +x gradlew
-          ./gradlew assembleDebug --no-daemon
+          gh release delete latest --cleanup-tag --yes 2>/dev/null || true
+          gh release create latest GKhata-*.apk* --target "$GITHUB_SHA" --prerelease \
+            --title "GKhata ${{ steps.ver.outputs.name }} (build ${{ github.run_number }})" \
+            --notes "Build #${{ github.run_number }} - $(date -u +%F\ %H:%M) UTC. Download the .apk below."
 
-      - name: Upload debug APK
-        if: env.HAS_KEYSTORE != 'true'
+      - name: Upload build log
+        if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: dairy-order-debug
-          path: android/app/build/outputs/apk/debug/app-debug.apk
+          name: build-log
+          path: build.log
+          if-no-files-found: ignore
           retention-days: 7
           
