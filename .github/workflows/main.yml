@@ -1,22 +1,22 @@
-# GKhata - Android APK build (the ONLY file you ever need to put in .github/workflows/)
+# ============================================================
+#  GKhata - Android APK build  (improved)
+#  Put ONLY this file in .github/workflows/
 #
-# Upload to the repo root (web upload is enough, any mix works):
-#   gkhata-source.zip     base source (whole project)
-#   update*.zip           later changes, applied in name order (update1.zip, update2.zip ...)
-#   index.html            -> www/index.html
-#   *.java                -> native/
-#   AndroidManifest.xml   -> native/AndroidManifest.xml
-#   version.txt           one line, e.g. 1.0.2 (default: version in package.json)
-#   (or real folders: www/ native/ tools/ ...)
-# A zip that holds one wrapper folder (gkhata-source/...) is flattened automatically.
-# Priority (low -> high): gkhata-source.zip < update*.zip < files/folders in the repo < root index.html/*.java/AndroidManifest.xml
+#  Upload to the repo root (web upload is enough, any mix works):
+#    gkhata-source.zip     base source (whole project)
+#    update*.zip           later changes, applied in name order
+#    index.html            -> www/index.html
+#    *.java                -> native/
+#    AndroidManifest.xml   -> native/AndroidManifest.xml
+#    version.txt           one line, e.g. 1.0.2
 #
-# Secrets (optional): KEYSTORE_B64, KS_PASS, KEY_PASS, KEY_ALIAS (default "dairy") -> signed release APK; without them a debug APK is built.
-# Variable (optional): VERSION_CODE_BASE - added to the build number if Android refuses an update because the repo was recreated.
-# Manual run: Actions > Build Android APK > Run workflow (version, notes, emulator smoke test).
+#  Secrets (optional): KEYSTORE_B64, KS_PASS, KEY_PASS, KEY_ALIAS (default "dairy")
+#      -> signed RELEASE apk. Without them a DEBUG apk is built.
+#  Variable (optional): VERSION_CODE_BASE
 #
-# Output: Releases > "latest" > GKhata-<version>-<debug|release>.apk (+ .sha256); also Actions > run > Artifacts.
-#         The run's Summary page shows version, size, SHA-256, signing certificate, permissions and, on failure, the error lines.
+#  Manual run: Actions > Build Android APK > Run workflow
+#  Output: Releases > APK (+ .sha256) ; also Actions > run > Artifacts
+# ============================================================
 name: Build Android APK
 
 on:
@@ -33,6 +33,11 @@ on:
         description: Release notes (optional)
         required: false
         default: ''
+      release_mode:
+        description: "Releases page: latest = replace one 'latest' release, versioned = keep every build, none = Artifacts only"
+        type: choice
+        options: [latest, versioned, none]
+        default: latest
       smoke_test:
         description: Run on an Android emulator (launch, incoming call, SMS - crash check)
         type: boolean
@@ -51,7 +56,7 @@ defaults:
 
 jobs:
   build:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 60
     env:
       HAS_KEYSTORE: ${{ secrets.KEYSTORE_B64 != '' }}
@@ -59,6 +64,7 @@ jobs:
     steps:
       - uses: actions/checkout@v6
 
+      # ---------- 1. Source ----------
       - name: Prepare source (zips + loose files)
         run: |
           set -euo pipefail
@@ -87,9 +93,21 @@ jobs:
           if [ -f index.html ]; then cp -f index.html www/index.html; echo "index.html -> www/"; fi
           for f in *.java; do if [ -f "$f" ]; then cp -f "$f" native/; echo "$f -> native/"; fi; done
           if [ -f AndroidManifest.xml ]; then cp -f AndroidManifest.xml native/AndroidManifest.xml; echo "AndroidManifest.xml -> native/"; fi
+          MISSING=""
           for need in setup.sh package.json capacitor.config.json www/index.html native/MainActivity.java native/AndroidManifest.xml; do
-            [ -f "$need" ] || { echo "::error::Missing $need - upload gkhata-source.zip first"; exit 1; }
+            [ -f "$need" ] || MISSING="$MISSING $need"
           done
+          if [ -n "$MISSING" ]; then
+            echo "::error::Missing:$MISSING  ->  upload gkhata-source.zip (the whole project) to the repo root first"
+            {
+              echo "## Source files missing"
+              echo "These files were not found:"
+              for m in $MISSING; do echo "- \`$m\`"; done
+              echo
+              echo "**Fix:** upload \`gkhata-source.zip\` (whole project) to the repository root, then run again."
+            } >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
 
       - name: Safety patches (harmless if already fixed)
         run: |
@@ -97,6 +115,7 @@ jobs:
           sed -i 's/"captureInput": true/"captureInput": false/' capacitor.config.json
           sed -i 's/@Override protected void onResume()/@Override public void onResume()/; s/@Override protected void onPause()/@Override public void onPause()/' native/MainActivity.java
 
+      # ---------- 2. Version ----------
       - name: Version
         id: ver
         env:
@@ -119,6 +138,7 @@ jobs:
         with:
           node-version: 22
 
+      # ---------- 3. Fast checks ----------
       - name: Pre-build checks (fail in seconds instead of after the Gradle build)
         run: |
           set -euo pipefail
@@ -170,10 +190,6 @@ jobs:
           distribution: temurin
           java-version: 17
 
-      - uses: gradle/actions/setup-gradle@v6
-        with:
-          cache-provider: basic
-
       - name: Keep the debug signature stable between builds
         if: env.HAS_KEYSTORE != 'true'
         uses: actions/cache@v5
@@ -181,12 +197,23 @@ jobs:
           path: ~/.android/debug.keystore
           key: debug-keystore-v1
 
+      # ---------- 4. Create Android project ----------
       - name: Create Android project and copy native code
         env:
           VERSION_NAME: ${{ steps.ver.outputs.name }}
           VERSION_CODE: ${{ steps.ver.outputs.code }}
-        run: bash setup.sh
+        run: |
+          set -euo pipefail
+          bash setup.sh
+          [ -d android ] || { echo "::error::setup.sh finished but android/ folder was not created - check setup.sh"; exit 1; }
+          [ -f android/gradlew ] || { echo "::error::android/gradlew not found - setup.sh did not create a Gradle project"; exit 1; }
 
+      # FIX: setup-gradle now runs AFTER android/ exists (this was the cause of the failure)
+      - uses: gradle/actions/setup-gradle@v6
+        with:
+          cache-provider: basic
+
+      # ---------- 5. Build ----------
       - name: Build APK
         working-directory: android
         timeout-minutes: 30
@@ -211,6 +238,7 @@ jobs:
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
 
+      # ---------- 6. Sign ----------
       - name: Sign release APK
         if: env.HAS_KEYSTORE == 'true'
         env:
@@ -238,6 +266,7 @@ jobs:
         if: env.HAS_KEYSTORE != 'true'
         run: cp android/app/build/outputs/apk/debug/app-debug.apk "GKhata-${{ steps.ver.outputs.name }}-debug.apk"
 
+      # ---------- 7. Inspect + summary ----------
       - name: Inspect APK and write summary
         env:
           VN: ${{ steps.ver.outputs.name }}
@@ -294,6 +323,7 @@ jobs:
             echo "- Signing certificate: $CERT"
           } > release-notes.md
 
+      # ---------- 8. Publish ----------
       - name: Upload APK (Artifacts)
         uses: actions/upload-artifact@v7
         with:
@@ -303,19 +333,28 @@ jobs:
           retention-days: ${{ env.HAS_KEYSTORE == 'true' && 90 || 14 }}
 
       - name: Publish on Releases page (direct .apk link)
+        if: inputs.release_mode != 'none'
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
+          MODE: ${{ inputs.release_mode }}
+          VN: ${{ steps.ver.outputs.name }}
         run: |
-          gh release delete latest --cleanup-tag --yes 2>/dev/null || true
-          if gh release create latest GKhata-*.apk* --target "$GITHUB_SHA" --prerelease \
-              --title "GKhata ${{ steps.ver.outputs.name }} (build ${{ github.run_number }})" \
+          if [ "${MODE:-latest}" = "versioned" ]; then
+            TAG="v${VN}-build${{ github.run_number }}"
+          else
+            TAG="latest"
+            gh release delete latest --cleanup-tag --yes 2>/dev/null || true
+          fi
+          if gh release create "$TAG" GKhata-*.apk* --target "$GITHUB_SHA" --prerelease \
+              --title "GKhata $VN (build ${{ github.run_number }})" \
               --notes-file release-notes.md; then
-            printf '\n**Download:** %s/%s/releases/tag/latest\n' "$GITHUB_SERVER_URL" "$GITHUB_REPOSITORY" >> "$GITHUB_STEP_SUMMARY"
+            printf '\n**Download:** %s/%s/releases/tag/%s\n' "$GITHUB_SERVER_URL" "$GITHUB_REPOSITORY" "$TAG" >> "$GITHUB_STEP_SUMMARY"
           else
             echo "::warning::Could not publish on the Releases page - use Actions > this run > Artifacts"
           fi
 
+      # ---------- 9. Optional emulator smoke test ----------
       - name: Enable KVM
         if: inputs.smoke_test
         run: |
@@ -377,4 +416,3 @@ jobs:
           path: build.log
           if-no-files-found: ignore
           retention-days: 7
-          
