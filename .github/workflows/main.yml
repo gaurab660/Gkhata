@@ -1,17 +1,22 @@
 # GKhata - Android APK build (the ONLY file you ever need to put in .github/workflows/)
 #
-# What you can put in the repo (web upload, no folders needed). Any mix works:
-#   gkhata-source.zip        base source (whole project)
-#   update*.zip              later changes, applied in name order on top of the base (update1.zip, update2.zip ...)
-#   index.html               -> replaces www/index.html (the whole app screen/logic)
-#   *.java                   -> copied into native/ (CallReceiver.java, MainActivity.java ...)
-#   AndroidManifest.xml      -> replaces native/AndroidManifest.xml
-#   version.txt              one line, e.g. 1.0.2 -> app version name (default: version in package.json)
-#   (or real folders: www/ native/ tools/ ... - files in the repo itself always win over the zips)
+# Upload to the repo root (web upload is enough, any mix works):
+#   gkhata-source.zip     base source (whole project)
+#   update*.zip           later changes, applied in name order (update1.zip, update2.zip ...)
+#   index.html            -> www/index.html
+#   *.java                -> native/
+#   AndroidManifest.xml   -> native/AndroidManifest.xml
+#   version.txt           one line, e.g. 1.0.2 (default: version in package.json)
+#   (or real folders: www/ native/ tools/ ...)
+# A zip that holds one wrapper folder (gkhata-source/...) is flattened automatically.
 # Priority (low -> high): gkhata-source.zip < update*.zip < files/folders in the repo < root index.html/*.java/AndroidManifest.xml
 #
-# Output: Releases page -> "latest" -> GKhata-<version>-<debug|release>.apk  (direct .apk, no zip to unpack)
-#         also Actions -> run -> Artifacts. If a build fails, the run's Summary page shows the error lines.
+# Secrets (optional): KEYSTORE_B64, KS_PASS, KEY_PASS, KEY_ALIAS (default "dairy") -> signed release APK; without them a debug APK is built.
+# Variable (optional): VERSION_CODE_BASE - added to the build number if Android refuses an update because the repo was recreated.
+# Manual run: Actions > Build Android APK > Run workflow (version, notes, emulator smoke test).
+#
+# Output: Releases > "latest" > GKhata-<version>-<debug|release>.apk (+ .sha256); also Actions > run > Artifacts.
+#         The run's Summary page shows version, size, SHA-256, signing certificate, permissions and, on failure, the error lines.
 name: Build Android APK
 
 on:
@@ -19,36 +24,69 @@ on:
     branches: [main, master]
     paths-ignore: ['**.md']
   workflow_dispatch:
+    inputs:
+      version:
+        description: Version name override (e.g. 1.0.2)
+        required: false
+        default: ''
+      notes:
+        description: Release notes (optional)
+        required: false
+        default: ''
+      smoke_test:
+        description: Run on an Android emulator (launch, incoming call, SMS - crash check)
+        type: boolean
+        default: false
 
 permissions:
-  contents: write          # needed only to publish the APK on the Releases page (keep the repo PRIVATE)
+  contents: write
 
 concurrency:
   group: build-apk
   cancel-in-progress: true
 
+defaults:
+  run:
+    shell: bash
+
 jobs:
   build:
     runs-on: ubuntu-latest
-    timeout-minutes: 40
+    timeout-minutes: 60
     env:
       HAS_KEYSTORE: ${{ secrets.KEYSTORE_B64 != '' }}
+      BUILD_TYPE: ${{ secrets.KEYSTORE_B64 != '' && 'release' || 'debug' }}
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v6
 
       - name: Prepare source (zips + loose files)
         run: |
           set -euo pipefail
           STAGE="$RUNNER_TEMP/stage"; mkdir -p "$STAGE"
-          if [ -f gkhata-source.zip ]; then unzip -q -o gkhata-source.zip -d "$STAGE"; echo "base: gkhata-source.zip"; fi
-          for z in $(ls update*.zip 2>/dev/null | sort -V); do unzip -q -o "$z" -d "$STAGE"; echo "update: $z"; done
-          # zips fill in only what the repo itself does not already have
+          : > "$RUNNER_TEMP/applied.txt"
+          unpack() {
+            local z="$1" dir
+            unzip -tq "$z" >/dev/null || { echo "::error::$z is damaged or not a zip - upload it again"; exit 1; }
+            dir=$(mktemp -d -p "$RUNNER_TEMP")
+            unzip -q -o "$z" -d "$dir"
+            rm -rf "$dir/__MACOSX"; find "$dir" -name .DS_Store -delete
+            set -- "$dir"/*
+            if [ $# -eq 1 ] && [ -d "$1" ]; then
+              case "$(basename "$1")" in
+                www|native|tools|android) ;;
+                *) echo "  $z: wrapper folder $(basename "$1")/ removed"; dir="$1" ;;
+              esac
+            fi
+            cp -a "$dir"/. "$STAGE"/
+            echo "$z" >> "$RUNNER_TEMP/applied.txt"
+          }
+          if [ -f gkhata-source.zip ]; then unpack gkhata-source.zip; echo "base: gkhata-source.zip"; fi
+          for z in $(ls update*.zip 2>/dev/null | sort -V); do unpack "$z"; echo "update: $z"; done
           cp -a --update=none "$STAGE"/. . || true
-          # loose files at the repo root are routed to the right place (these always win)
           mkdir -p www native
-          [ -f index.html ] && cp -f index.html www/index.html && echo "index.html -> www/"
-          for f in *.java; do [ -f "$f" ] && cp -f "$f" native/ && echo "$f -> native/"; done
-          [ -f AndroidManifest.xml ] && cp -f AndroidManifest.xml native/ && echo "AndroidManifest.xml -> native/"
+          if [ -f index.html ]; then cp -f index.html www/index.html; echo "index.html -> www/"; fi
+          for f in *.java; do if [ -f "$f" ]; then cp -f "$f" native/; echo "$f -> native/"; fi; done
+          if [ -f AndroidManifest.xml ]; then cp -f AndroidManifest.xml native/AndroidManifest.xml; echo "AndroidManifest.xml -> native/"; fi
           for need in setup.sh package.json capacitor.config.json www/index.html native/MainActivity.java native/AndroidManifest.xml; do
             [ -f "$need" ] || { echo "::error::Missing $need - upload gkhata-source.zip first"; exit 1; }
           done
@@ -56,46 +94,112 @@ jobs:
       - name: Safety patches (harmless if already fixed)
         run: |
           set -e
-          # Capacitor's captureInput breaks paste on some keyboards
           sed -i 's/"captureInput": true/"captureInput": false/' capacitor.config.json
-          # onResume/onPause must be public in BridgeActivity subclasses
           sed -i 's/@Override protected void onResume()/@Override public void onResume()/; s/@Override protected void onPause()/@Override public void onPause()/' native/MainActivity.java
 
       - name: Version
         id: ver
+        env:
+          INPUT_VERSION: ${{ inputs.version }}
+          VC_BASE: ${{ vars.VERSION_CODE_BASE }}
         run: |
-          VN=$( [ -f version.txt ] && tr -d ' \r\n' < version.txt || node -p "require('./package.json').version" )
+          set -euo pipefail
+          if [ -n "$INPUT_VERSION" ]; then VN="$INPUT_VERSION"
+          elif [ -f version.txt ]; then VN=$(cat version.txt)
+          else VN=$(node -p "require('./package.json').version"); fi
+          VN=$(printf '%s' "$VN" | tr -d ' \r\n')
+          [[ "$VN" =~ ^[0-9A-Za-z][0-9A-Za-z._-]{0,30}$ ]] || { echo "::error::Bad version '$VN' (letters, digits, . _ - only)"; exit 1; }
+          case "$VC_BASE" in ''|*[!0-9]*) VC_BASE=0 ;; esac
+          VC=$((VC_BASE + ${{ github.run_number }}))
           echo "name=$VN" >> "$GITHUB_OUTPUT"
-          echo "Version: $VN  (versionCode = run #${{ github.run_number }})"
+          echo "code=$VC" >> "$GITHUB_OUTPUT"
+          echo "Version: $VN  (versionCode $VC)"
 
-      - uses: actions/setup-node@v5
+      - uses: actions/setup-node@v6
         with:
-          node-version: 20
+          node-version: 22
+
+      - name: Pre-build checks (fail in seconds instead of after the Gradle build)
+        run: |
+          set -euo pipefail
+          node - <<'EOF'
+          const fs = require('fs'), vm = require('vm');
+          const html = fs.readFileSync('www/index.html', 'utf8');
+          const re = /<script\b([^>]*)>([\s\S]*?)<\/script>/gi;
+          let m, n = 0, bad = 0;
+          while ((m = re.exec(html))) {
+            if (/\bsrc\s*=/.test(m[1])) continue;
+            const t = (m[1].match(/\btype\s*=\s*["']?([^"'\s>]+)/i) || [])[1];
+            if (t && !/^(text|application)\/(javascript|ecmascript)$/i.test(t)) continue;
+            n++;
+            try { new vm.Script(m[2], { filename: 'inline-script-' + n }); }
+            catch (e) { bad++; console.log('::error::JS syntax error in www/index.html: ' + String(e.stack).split('\n').slice(0, 4).join(' | ')); }
+          }
+          console.log(n + ' inline scripts checked');
+          if (bad) process.exit(1);
+          EOF
+          python3 - <<'EOF'
+          import os, re, sys, xml.etree.ElementTree as ET
+          A = '{http://schemas.android.com/apk/res/android}'
+          bad = []
+          try:
+              root = ET.parse('native/AndroidManifest.xml').getroot()
+              for e in root.iter():
+                  if e.tag in ('activity', 'receiver', 'service', 'provider'):
+                      n = e.get(A + 'name', '')
+                      if n.startswith('.') or n.startswith('com.dairy.orderapp.'):
+                          if not os.path.exists('native/%s.java' % n.split('.')[-1]):
+                              bad.append('manifest class without .java file: ' + n)
+              for c in re.findall(r'registerPlugin\((\w+)\.class\)', open('native/MainActivity.java').read()):
+                  if not os.path.exists('native/%s.java' % c):
+                      bad.append('registerPlugin class without .java file: ' + c)
+              for d, _, fs in os.walk('native/res'):
+                  for f in fs:
+                      if f.endswith('.xml'):
+                          ET.parse(os.path.join(d, f))
+          except ET.ParseError as e:
+              bad.append('XML error: %s' % e)
+          for b in bad:
+              print('::error::' + b)
+          sys.exit(1 if bad else 0)
+          EOF
+          grep -q 'Content-Security-Policy' www/index.html || echo "::warning::www/index.html has no Content-Security-Policy tag"
 
       - uses: actions/setup-java@v5
         with:
           distribution: temurin
           java-version: 17
 
-      - uses: gradle/actions/setup-gradle@v4
+      - uses: gradle/actions/setup-gradle@v6
+        with:
+          cache-provider: basic
+
+      - name: Keep the debug signature stable between builds
+        if: env.HAS_KEYSTORE != 'true'
+        uses: actions/cache@v5
+        with:
+          path: ~/.android/debug.keystore
+          key: debug-keystore-v1
 
       - name: Create Android project and copy native code
         env:
           VERSION_NAME: ${{ steps.ver.outputs.name }}
+          VERSION_CODE: ${{ steps.ver.outputs.code }}
         run: bash setup.sh
 
       - name: Build APK
-        id: build
         working-directory: android
+        timeout-minutes: 30
         run: |
           chmod +x gradlew
           if [ "$HAS_KEYSTORE" = "true" ]; then TASK=assembleRelease; else TASK=assembleDebug; fi
           set -o pipefail
-          ./gradlew $TASK --no-daemon --console=plain 2>&1 | tee "$GITHUB_WORKSPACE/build.log"
+          ./gradlew $TASK --no-daemon --console=plain -Dorg.gradle.parallel=true 2>&1 | tee "$GITHUB_WORKSPACE/build.log"
 
       - name: Show errors on the Summary page
         if: failure()
         run: |
+          [ -f build.log ] || exit 0
           {
             echo "## Build failed - error lines"
             echo '```'
@@ -113,45 +217,161 @@ jobs:
           KEYSTORE_B64: ${{ secrets.KEYSTORE_B64 }}
           KS_PASS: ${{ secrets.KS_PASS }}
           KEY_PASS: ${{ secrets.KEY_PASS }}
+          KEY_ALIAS: ${{ secrets.KEY_ALIAS || 'dairy' }}
           VN: ${{ steps.ver.outputs.name }}
         run: |
           set -euo pipefail
           BT=$(ls -d "$ANDROID_HOME"/build-tools/* | sort -V | tail -1)
-          echo "$KEYSTORE_B64" | base64 -d > "$RUNNER_TEMP/release.jks"
+          JKS="$RUNNER_TEMP/release.jks"
+          trap 'rm -f "$JKS"' EXIT
+          echo "$KEYSTORE_B64" | base64 -d > "$JKS"
           UNSIGNED=$(ls android/app/build/outputs/apk/release/*-release-unsigned.apk)
           "$BT/zipalign" -p 4 "$UNSIGNED" "$RUNNER_TEMP/aligned.apk"
-          "$BT/apksigner" sign --ks "$RUNNER_TEMP/release.jks" --ks-key-alias dairy \
+          "$BT/zipalign" -c -p 4 "$RUNNER_TEMP/aligned.apk"
+          "$BT/apksigner" sign --ks "$JKS" --ks-key-alias "$KEY_ALIAS" \
             --ks-pass env:KS_PASS --key-pass env:KEY_PASS --min-sdk-version 24 \
             --out "GKhata-$VN-release.apk" "$RUNNER_TEMP/aligned.apk"
-          rm -f "$RUNNER_TEMP/release.jks"
           "$BT/apksigner" verify --verbose --print-certs "GKhata-$VN-release.apk" | tee verify.txt
           grep -q "Verified using v2 scheme (APK Signature Scheme v2): true" verify.txt
-          sha256sum "GKhata-$VN-release.apk" | tee "GKhata-$VN-release.apk.sha256"
 
       - name: Name debug APK
         if: env.HAS_KEYSTORE != 'true'
         run: cp android/app/build/outputs/apk/debug/app-debug.apk "GKhata-${{ steps.ver.outputs.name }}-debug.apk"
 
+      - name: Inspect APK and write summary
+        env:
+          VN: ${{ steps.ver.outputs.name }}
+          VC: ${{ steps.ver.outputs.code }}
+          INPUT_NOTES: ${{ inputs.notes }}
+        run: |
+          set -euo pipefail
+          BT=$(ls -d "$ANDROID_HOME"/build-tools/* | sort -V | tail -1)
+          APK="GKhata-$VN-$BUILD_TYPE.apk"
+          APP_ID=$(node -p "require('./capacitor.config.json').appId")
+          "$BT/aapt2" dump badging "$APK" > badging.txt
+          grep -q "^package: name='$APP_ID' versionCode='$VC' versionName='$VN'" badging.txt \
+            || { echo "::error::APK does not match expected $APP_ID $VN ($VC)"; head -1 badging.txt; exit 1; }
+          unzip -p "$APK" assets/public/index.html | cmp -s - www/index.html \
+            || echo "::warning::index.html inside the APK differs from www/index.html"
+          grep -oP "uses-permission: name='\K[^']+" badging.txt | sort -u > perms.txt
+          MIN=$(grep -oP "^sdkVersion:'\K[0-9]+" badging.txt || echo "?")
+          TGT=$(grep -oP "^targetSdkVersion:'\K[0-9]+" badging.txt || echo "?")
+          "$BT/apksigner" verify --print-certs "$APK" > certs.txt 2>&1 || true
+          CERT=$(grep -m1 -oP 'certificate SHA-256 digest: \K\w+' certs.txt || echo "?")
+          sha256sum "$APK" | tee "$APK.sha256"
+          SHA=$(cut -d' ' -f1 "$APK.sha256")
+          SIZE=$(du -h "$APK" | cut -f1)
+          {
+            echo "## GKhata $VN ($BUILD_TYPE) - build #${{ github.run_number }}"
+            echo
+            echo "| Item | Value |"
+            echo "|---|---|"
+            echo "| File | \`$APK\` ($SIZE) |"
+            echo "| versionCode | $VC |"
+            echo "| Android | min SDK $MIN, target SDK $TGT |"
+            echo "| SHA-256 | \`$SHA\` |"
+            echo "| Signing certificate | \`$CERT\` |"
+            echo "| Source files | $(tr '\n' ' ' < "$RUNNER_TEMP/applied.txt") |"
+            echo
+            echo "The signing certificate must be identical in every build, otherwise Android refuses the update."
+            if [ "$BUILD_TYPE" = debug ]; then
+              echo
+              echo "**Debug build** - not for daily use. If the certificate differs from the installed app, take a Backup first, then uninstall and install again."
+            fi
+            echo
+            echo "<details><summary>Permissions ($(wc -l < perms.txt))</summary>"
+            echo
+            sed 's/^/- /' perms.txt
+            echo
+            echo "</details>"
+          } >> "$GITHUB_STEP_SUMMARY"
+          {
+            if [ -n "$INPUT_NOTES" ]; then printf '%s\n\n' "$INPUT_NOTES"; fi
+            echo "Build #${{ github.run_number }} - $(date -u '+%F %H:%M') UTC - $(git log -1 --pretty='%h %s')"
+            echo
+            echo "- Type: $BUILD_TYPE, versionCode $VC, Android min $MIN / target $TGT"
+            echo "- SHA-256: $SHA"
+            echo "- Signing certificate: $CERT"
+          } > release-notes.md
+
       - name: Upload APK (Artifacts)
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
-          name: GKhata-${{ steps.ver.outputs.name }}-${{ env.HAS_KEYSTORE == 'true' && 'release' || 'debug' }}
+          name: GKhata-${{ steps.ver.outputs.name }}-${{ env.BUILD_TYPE }}
           path: GKhata-*.apk*
-          retention-days: 30
+          if-no-files-found: error
+          retention-days: ${{ env.HAS_KEYSTORE == 'true' && 90 || 14 }}
 
       - name: Publish on Releases page (direct .apk link)
-        continue-on-error: true
         env:
           GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
         run: |
           gh release delete latest --cleanup-tag --yes 2>/dev/null || true
-          gh release create latest GKhata-*.apk* --target "$GITHUB_SHA" --prerelease \
-            --title "GKhata ${{ steps.ver.outputs.name }} (build ${{ github.run_number }})" \
-            --notes "Build #${{ github.run_number }} - $(date -u +%F\ %H:%M) UTC. Download the .apk below."
+          if gh release create latest GKhata-*.apk* --target "$GITHUB_SHA" --prerelease \
+              --title "GKhata ${{ steps.ver.outputs.name }} (build ${{ github.run_number }})" \
+              --notes-file release-notes.md; then
+            printf '\n**Download:** %s/%s/releases/tag/latest\n' "$GITHUB_SERVER_URL" "$GITHUB_REPOSITORY" >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "::warning::Could not publish on the Releases page - use Actions > this run > Artifacts"
+          fi
+
+      - name: Enable KVM
+        if: inputs.smoke_test
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+
+      - name: Write smoke test script
+        if: inputs.smoke_test
+        run: |
+          cat > smoke.sh <<'EOF'
+          set -u
+          PKG=com.dairy.orderapp
+          APK=$(ls GKhata-*.apk | head -1)
+          mkdir -p smoke
+          adb install -r "$APK" || exit 1
+          for p in READ_PHONE_STATE READ_CALL_LOG RECEIVE_SMS READ_CONTACTS POST_NOTIFICATIONS RECORD_AUDIO; do
+            adb shell pm grant "$PKG" "android.permission.$p" >/dev/null 2>&1
+          done
+          adb logcat -c
+          adb shell monkey -p "$PKG" -c android.intent.category.LAUNCHER 1 >/dev/null 2>&1
+          sleep 20
+          adb shell pidof "$PKG" >/dev/null || { echo "::error::App is not running after launch"; adb logcat -d > smoke/logcat.txt; exit 1; }
+          adb emu gsm call 9841000000; sleep 4
+          adb emu gsm cancel 9841000000; sleep 4
+          adb emu sms send 9841000000 "dahi 2 poka"; sleep 4
+          adb shell screencap -p /sdcard/screen.png && adb pull /sdcard/screen.png smoke/screen.png
+          adb logcat -d > smoke/logcat.txt
+          if grep -qE "Process: $PKG|ANR in $PKG" smoke/logcat.txt; then echo "::error::App crashed - see the smoke-test artifact (logcat.txt)"; exit 1; fi
+          adb shell pidof "$PKG" >/dev/null || { echo "::error::App stopped after incoming call/SMS"; exit 1; }
+          echo "Smoke test passed"
+          EOF
+
+      - name: Emulator smoke test
+        if: inputs.smoke_test
+        timeout-minutes: 25
+        uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: 34
+          target: google_apis
+          arch: x86_64
+          disable-animations: true
+          script: bash smoke.sh
+
+      - name: Upload smoke test files
+        if: always() && inputs.smoke_test
+        uses: actions/upload-artifact@v7
+        with:
+          name: smoke-test
+          path: smoke/
+          if-no-files-found: ignore
+          retention-days: 7
 
       - name: Upload build log
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: build-log
           path: build.log
