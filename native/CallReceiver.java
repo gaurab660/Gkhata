@@ -64,7 +64,7 @@ public class CallReceiver extends BroadcastReceiver {
             if (CallBus.plugin != null) CallBus.plugin.ring(o);
         } catch (Exception ignored) {}
         if (CallBus.fg) return;
-        Intent in = new Intent(c, MainActivity.class).setFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_SINGLE_TOP);
+        Intent in = new Intent(c, MainActivity.class).setFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_SINGLE_TOP).putExtra("co_ring", true);
         if (Settings.canDrawOverlays(c)) {          // allowed to start an activity from the background
             try { c.startActivity(in); return; } catch (Exception ignored) {}   // fall back to the notification below
         }

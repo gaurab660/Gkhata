@@ -105,6 +105,7 @@ public class MainActivity extends BridgeActivity {
         registerPlugin(BackupPlugin.class);
         super.onCreate(b);
 
+        applyRingFlags(getIntent());
         applyPrivacy();
         if (!isDebuggable()) {
             try { WebView.setWebContentsDebuggingEnabled(false); } catch (Throwable ignored) {}
@@ -120,6 +121,7 @@ public class MainActivity extends BridgeActivity {
     @Override protected void onNewIntent(Intent i) {
         super.onNewIntent(i);
         setIntent(i);
+        applyRingFlags(i);
         handleShare(i);
     }
 
@@ -135,6 +137,24 @@ public class MainActivity extends BridgeActivity {
     @Override public void onPause() {
         super.onPause();
         CallBus.fg = false;
+    }
+
+    /** Opened by an incoming customer call: show over the lock screen until the screen goes off. */
+    private void applyRingFlags(Intent i) {
+        if (i == null || !i.getBooleanExtra("co_ring", false)) return;
+        i.removeExtra("co_ring");
+        try {
+            if (Build.VERSION.SDK_INT >= 27) { setShowWhenLocked(true); setTurnScreenOn(true); }
+            else getWindow().addFlags(WindowManager.LayoutParams.FLAG_SHOW_WHEN_LOCKED | WindowManager.LayoutParams.FLAG_TURN_SCREEN_ON);
+        } catch (Throwable ignored) {}
+    }
+
+    @Override public void onStop() {
+        super.onStop();
+        try {
+            if (Build.VERSION.SDK_INT >= 27) { setShowWhenLocked(false); setTurnScreenOn(false); }
+            else getWindow().clearFlags(WindowManager.LayoutParams.FLAG_SHOW_WHEN_LOCKED | WindowManager.LayoutParams.FLAG_TURN_SCREEN_ON);
+        } catch (Throwable ignored) {}
     }
 
     @Override public void onTrimMemory(int level) {
