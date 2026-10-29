@@ -11,7 +11,7 @@
 #    update*.zip        (optional later changes, applied in name order)
 #    index.html / *.java / AndroidManifest.xml in repo root
 #        -> copied into www/ and native/ automatically
-#    version.txt        (optional) one line, e.g. 1.0.2
+#    version.txt        (optional) one line MAJOR.MINOR, e.g. 1.0  -> APK version 1.0.<build number>
 #
 #  Secrets (optional): KEYSTORE_B64, KS_PASS, KEY_PASS, KEY_ALIAS (default "dairy")
 #      -> signed RELEASE apk.  Without them a DEBUG apk is built.
@@ -38,10 +38,10 @@ on:
         required: false
         default: ''
       release_mode:
-        description: "Releases page: latest = one replaced release, versioned = keep every build, none = Artifacts only"
+        description: "Releases page: versioned = keep every build (default), latest = one replaced release, none = Artifacts only"
         type: choice
-        options: [latest, versioned, none]
-        default: latest
+        options: [versioned, latest, none]
+        default: versioned
       smoke_test:
         description: Run on an Android emulator (launch, incoming call, SMS - crash check)
         type: boolean
@@ -134,9 +134,16 @@ jobs:
           VC_BASE: ${{ vars.VERSION_CODE_BASE }}
         run: |
           set -euo pipefail
+          # versionName = MAJOR.MINOR (from version.txt, else package.json) + "." + build number
+          #   e.g. version.txt "1.0" -> 1.0.57 on build #57. Every push gets a higher version automatically.
+          # To start a new series (2.0.x) just edit version.txt. A manual run can still override with "version".
           if [ -n "$INPUT_VERSION" ]; then VN="$INPUT_VERSION"
-          elif [ -f version.txt ]; then VN=$(cat version.txt)
-          else VN=$(node -p "require('./package.json').version"); fi
+          else
+            if [ -f version.txt ]; then BASE=$(cat version.txt); else BASE=$(node -p "require('./package.json').version"); fi
+            BASE=$(printf '%s' "$BASE" | tr -d ' \r\n')
+            BASE=$(printf '%s' "$BASE" | cut -d. -f1,2)
+            VN="${BASE}.${{ github.run_number }}"
+          fi
           VN=$(printf '%s' "$VN" | tr -d ' \r\n')
           [[ "$VN" =~ ^[0-9A-Za-z][0-9A-Za-z._-]{0,30}$ ]] || { echo "::error::Bad version '$VN' (letters, digits, . _ - only)"; exit 1; }
           case "$VC_BASE" in ''|*[!0-9]*) VC_BASE=0 ;; esac
@@ -353,18 +360,27 @@ jobs:
           MODE: ${{ inputs.release_mode }}
           VN: ${{ steps.ver.outputs.name }}
         run: |
-          if [ "${MODE:-latest}" = "versioned" ]; then
-            TAG="v${VN}-build${{ github.run_number }}"
-          else
+          # Every build = its own normal (non-pre-release) release, newest one marked "Latest".
+          # Besides GKhata-<version>-<type>.apk, a fixed-name GKhata.apk is attached, so this link never changes:
+          #   https://github.com/<owner>/<repo>/releases/latest/download/GKhata.apk
+          mkdir -p "$RUNNER_TEMP/rel"
+          cp GKhata-*.apk* "$RUNNER_TEMP/rel/"
+          cp "GKhata-$VN-$BUILD_TYPE.apk" "$RUNNER_TEMP/rel/GKhata.apk"
+          if [ "${MODE:-versioned}" = "latest" ]; then
             TAG="latest"
-            gh release delete latest --cleanup-tag --yes 2>/dev/null || true
+          else
+            TAG="v${VN}"
           fi
-          if gh release create "$TAG" GKhata-*.apk* --target "$GITHUB_SHA" --prerelease \
-              --title "GKhata $VN (build ${{ github.run_number }})" \
+          gh release delete "$TAG" --cleanup-tag --yes 2>/dev/null || true
+          gh release delete latest --cleanup-tag --yes 2>/dev/null || true   # remove the old single "latest" pre-release, if any
+          if gh release create "$TAG" "$RUNNER_TEMP"/rel/* --target "$GITHUB_SHA" --latest \
+              --title "GKhata $VN" \
               --notes-file release-notes.md; then
             printf '\n**Download:** %s/%s/releases/tag/%s\n' "$GITHUB_SERVER_URL" "$GITHUB_REPOSITORY" "$TAG" >> "$GITHUB_STEP_SUMMARY"
+            printf '\n**Permanent APK link:** %s/%s/releases/latest/download/GKhata.apk\n' "$GITHUB_SERVER_URL" "$GITHUB_REPOSITORY" >> "$GITHUB_STEP_SUMMARY"
           else
-            echo "::warning::Could not publish on the Releases page - use Actions > this run > Artifacts"
+            echo "::error::Could not publish on the Releases page - check Settings > Actions > General > Workflow permissions = Read and write"
+            exit 1
           fi
 
       # ---------- 9. Optional emulator smoke test ----------
