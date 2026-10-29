@@ -7843,7 +7843,10 @@ window.coTime=function(){const v=prompt('Order लिने समय (२४ �
 function ev(o){if(!o||seen.has(o.ts))return;seen.add(o.ts);Q.push(o)}
 function dayOf(){try{return S.day||today()}catch(e){return today()}}
 function has(cid){try{return D.ent.some(e=>e.cid==cid&&e.date==dayOf()&&!e.lvl)}catch(e){return false}}
-function ring(o){if(!o||!o.number||seen.has('r'+o.ts))return;seen.add('r'+o.ts);if(!ready()||!win(Date.now()))return;const c=cust(o.number);if(!c)return;
+function ring(o){if(!o||!o.number||seen.has('r'+o.ts))return;
+ if(Date.now()-o.ts>120000)return;
+ if(!ready()){setTimeout(()=>ring(o),700);return}
+ seen.add('r'+o.ts);if(!win(Date.now()))return;const c=cust(o.number);if(!c)return;
  if(has(c.id)){toast(c.name+' — Order पहिले नै छ');return}
  if(S.m&&S.m.cid==c.id)return;coOpen(c.id,{number:o.number,ts:o.ts,type:1,ring:1})}
 const nm=s=>String(s||'').toLowerCase().replace(/\s+/g,' ').trim(),MQ=(()=>{try{return JSON.parse(localStorage.getItem('co_q')||'[]')}catch(e){return[]}})();let lastA='',blk=0;
