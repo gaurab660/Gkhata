@@ -38,40 +38,35 @@ import java.util.concurrent.atomic.AtomicBoolean;
 /**
  * GKhata main activity - hardened so that no function can freeze the app.
  *
- *  1. HANG-PROOFING
- *     - All file I/O runs on a dedicated background thread; the main thread only posts tiny updates.
- *     - Debug builds: StrictMode (logs any disk/network use on the main thread) + a main-thread watchdog.
- *     - Back button has a timeout: if the web page is frozen, Back still closes the app.
- *  2. WEBVIEW CRASH RECOVERY
- *     - onRenderProcessGone is handled (Android's recommended Termination Handling API): the activity is
- *       rebuilt with a fresh WebView instead of the whole app dying. If it happened in the background,
- *       the rebuild is deferred until the user is back. A loop guard stops endless crash/restart cycles.
- *  3. MEMORY: low-memory signal is forwarded to the web app ('gkLowMemory' event) so it can free caches.
- *  4. DIAGNOSTICS: last uncaught exception is saved to files/last_crash.txt (no network, no ledger data).
+ *  1. HANG-PROOFING: file I/O on a background thread; debug StrictMode + watchdog; Back button timeout.
+ *  2. WEBVIEW CRASH RECOVERY: onRenderProcessGone handled, activity rebuilt, loop guard.
+ *  3. MEMORY: low-memory signal forwarded to the web app ('gkLowMemory').
+ *  4. DIAGNOSTICS: last uncaught exception saved to files/last_crash.txt.
  *  5. PRIVACY: Recents thumbnail hidden (Android 13+); optional FLAG_SECURE via setSecureScreen().
- *  6. SHARED AUDIO ("Share > GKhata"): size-capped, storage-checked, atomic, unique name, right extension.
+ *  6. SHARED AUDIO ("Share > GKhata"): size-capped, storage-checked, atomic, unique name.
+ *
+ * NOTE: BridgeActivity lifecycle methods (onStart/onResume/onPause/onStop/onDestroy) are PUBLIC,
+ * so every override below must also be public (protected causes a compile error).
  */
 public class MainActivity extends BridgeActivity {
 
     private static final String TAG = "GKhata";
 
-    // A shared recording is copied to the cache; refuse anything bigger than this
-    // (the web app itself limits what it sends to the speech service to 24 MB).
     private static final long MAX_SHARED_BYTES = 30L * 1024 * 1024;
     private static final long FREE_SPACE_MARGIN = 10L * 1024 * 1024;
-    private static final long STALE_MS = 60L * 60 * 1000;          // leftover shared files older than this are removed
+    private static final long STALE_MS = 60L * 60 * 1000;
     private static final String SHARED_DIR = "shared";
 
     private static final String PREFS = "gk_native";
     private static final String KEY_SECURE = "secure_screen";
 
-    private static final long BACK_TIMEOUT_MS = 1500;               // web page did not answer Back -> close app
+    private static final long BACK_TIMEOUT_MS = 1500;
     private static final long WATCHDOG_PERIOD_MS = 4000;            // debug only
-    private static final int  TRIM_RUNNING_LOW = 10;                // ComponentCallbacks2.TRIM_MEMORY_RUNNING_LOW
-    private static final int  MAX_RECOVERIES = 3;                   // max WebView rebuilds ...
-    private static final long RECOVERY_WINDOW_MS = 60_000;          // ... within this window
+    private static final int  TRIM_RUNNING_LOW = 10;
+    private static final int  MAX_RECOVERIES = 3;
+    private static final long RECOVERY_WINDOW_MS = 60_000;
 
-    // Survive activity re-creation (the activity object is rebuilt on recovery).
+    // Survive activity re-creation.
     private static long firstRecoveryAt = 0;
     private static int recoveries = 0;
     private static boolean crashLoggerInstalled = false;
@@ -84,8 +79,8 @@ public class MainActivity extends BridgeActivity {
         return t;
     });
 
-    private boolean pendingRecover = false;                         // renderer died while we were in the background
-    private volatile long lastTick = 0;                             // debug watchdog heartbeat
+    private boolean pendingRecover = false;
+    private volatile long lastTick = 0;
     private Thread watchdog;
 
     /** Incoming file exceeds MAX_SHARED_BYTES. */
@@ -100,7 +95,6 @@ public class MainActivity extends BridgeActivity {
     // ================================================================= lifecycle
 
     @Override public void onCreate(Bundle b) {
-        // Debug builds only: loudly log accidental disk/network work on the main thread (a common cause of ANRs).
         if (isDebuggable()) {
             StrictMode.setThreadPolicy(new StrictMode.ThreadPolicy.Builder().detectAll().penaltyLog().build());
             StrictMode.setVmPolicy(new StrictMode.VmPolicy.Builder().detectAll().penaltyLog().build());
@@ -119,9 +113,7 @@ public class MainActivity extends BridgeActivity {
         installBackHandler();
         if (isDebuggable()) startWatchdog();
 
-        // Housekeeping runs first on the single IO thread, so it always finishes before any share copy starts.
         runIo(this::cleanupStaleShared);
-        // Only handle the launch intent on a fresh start (not on rotation / recovery re-creation).
         if (b == null) handleShare(getIntent());
     }
 
@@ -131,17 +123,16 @@ public class MainActivity extends BridgeActivity {
         handleShare(i);
     }
 
-    @Override protected void onResume() {
+    @Override public void onResume() {
         super.onResume();
         CallBus.fg = true;
-        // The WebView died while we were hidden: rebuild now that the user can actually see the app.
         if (pendingRecover) {
             pendingRecover = false;
             recoverWebView();
         }
     }
 
-    @Override protected void onPause() {
+    @Override public void onPause() {
         super.onPause();
         CallBus.fg = false;
     }
@@ -151,12 +142,12 @@ public class MainActivity extends BridgeActivity {
         if (level >= TRIM_RUNNING_LOW) notifyWeb("gkLowMemory", String.valueOf(level));
     }
 
-    @Override protected void onDestroy() {
+    @Override public void onDestroy() {
         stopWatchdog();
-        main.removeCallbacksAndMessages(null);                      // no callbacks into a dead activity
+        main.removeCallbacksAndMessages(null);
         io.shutdownNow();
         CallBus.fg = false;
-        if (isFinishing()) deleteAllShared();                       // customer voice recordings never outlive the session
+        if (isFinishing()) deleteAllShared();
         super.onDestroy();
     }
 
@@ -172,9 +163,9 @@ public class MainActivity extends BridgeActivity {
                     Log.e(TAG, "WebView renderer gone, crashed=" + crashed);
                     main.post(() -> {
                         if (CallBus.fg) recoverWebView();
-                        else pendingRecover = true;                 // rebuild later, when the user returns
+                        else pendingRecover = true;
                     });
-                    return true;                                    // MUST return true, otherwise Android kills the whole app
+                    return true;                                    // MUST return true, otherwise the whole app dies
                 }
             });
         } catch (Throwable t) {
@@ -182,7 +173,6 @@ public class MainActivity extends BridgeActivity {
         }
     }
 
-    /** Rebuilds the activity (and with it a fresh WebView). Guarded against endless crash loops. */
     private void recoverWebView() {
         long now = SystemClock.elapsedRealtime();
         if (now - firstRecoveryAt > RECOVERY_WINDOW_MS) { firstRecoveryAt = now; recoveries = 0; }
@@ -197,9 +187,6 @@ public class MainActivity extends BridgeActivity {
 
     // ================================================================= back button
 
-    // One step back inside the app (closes popup / goes to previous screen);
-    // the app leaves only when the web app says 'exit' (second press within 2 s on the home screen).
-    // (@capacitor/app is not installed, so the JS 'backButton' listener never fires without this.)
     private void installBackHandler() {
         getOnBackPressedDispatcher().addCallback(this, new OnBackPressedCallback(true) {
             @Override public void handleOnBackPressed() {
@@ -207,7 +194,6 @@ public class MainActivity extends BridgeActivity {
                 if (w == null) { finish(); return; }
 
                 final AtomicBoolean answered = new AtomicBoolean(false);
-                // If the page is frozen and never answers, Back must still work: close instead of hanging.
                 final Runnable timeout = () -> {
                     if (answered.compareAndSet(false, true)) {
                         Log.w(TAG, "web page did not answer Back in time, closing");
@@ -221,11 +207,10 @@ public class MainActivity extends BridgeActivity {
                         v -> {
                             if (!answered.compareAndSet(false, true)) return;
                             main.removeCallbacks(timeout);
-                            // evaluateJavascript returns a JSON string, e.g. "\"exit\"", "\"\"" or "null".
                             String r = v == null ? "null" : v.replace("\"", "").trim();
                             switch (r) {
                                 case "exit":
-                                case "null":            // no answer from the page: do not trap the user
+                                case "null":
                                     finish();
                                     break;
                                 case "min":
@@ -246,19 +231,16 @@ public class MainActivity extends BridgeActivity {
     // ================================================================= privacy
 
     private void applyPrivacy() {
-        // Android 13+: hide the ledger in the "recent apps" thumbnail (normal screenshots still work).
         if (Build.VERSION.SDK_INT >= 33) {
             try { setRecentsScreenshotEnabled(false); } catch (Throwable ignored) {}
         }
-        // Optional hard protection (blocks screenshots, screen recording and the Recents thumbnail on ALL versions).
-        // Off by default; the web app / a plugin can switch it with setSecureScreen(true).
         applySecure(getSharedPreferences(PREFS, MODE_PRIVATE).getBoolean(KEY_SECURE, false));
     }
 
     /** Turn FLAG_SECURE on/off and remember the choice. Safe to call from any thread. */
     public void setSecureScreen(boolean on) {
         SharedPreferences sp = getSharedPreferences(PREFS, MODE_PRIVATE);
-        sp.edit().putBoolean(KEY_SECURE, on).apply();               // apply() (async), never commit(): no main-thread disk wait
+        sp.edit().putBoolean(KEY_SECURE, on).apply();
         runOnUiThread(() -> applySecure(on));
     }
 
@@ -269,25 +251,22 @@ public class MainActivity extends BridgeActivity {
 
     // ================================================================= shared audio
 
-    /** Accepts a recording shared from the Phone/Recorder app ("Share > GKhata"). */
     private void handleShare(Intent i) {
         if (i == null || !Intent.ACTION_SEND.equals(i.getAction())) return;
-        // Re-opened from the recents list: the old share was already handled.
         if ((i.getFlags() & Intent.FLAG_ACTIVITY_LAUNCHED_FROM_HISTORY) != 0) return;
 
         final Uri u = Build.VERSION.SDK_INT >= 33
                 ? i.getParcelableExtra(Intent.EXTRA_STREAM, Uri.class)
                 : i.getParcelableExtra(Intent.EXTRA_STREAM);
-        if (u == null || !"content".equals(u.getScheme())) return;     // only content:// from another app
-        if (isOwnProvider(u)) return;                                  // never copy our own private files (confused-deputy guard)
+        if (u == null || !"content".equals(u.getScheme())) return;
+        if (isOwnProvider(u)) return;
 
-        i.setAction(null);                                             // consume: do not re-process this intent
+        i.setAction(null);
         final String intentType = i.getType();
 
-        // Everything below touches disk / content providers -> background thread only.
         runIo(() -> {
             String type = resolveAudioType(intentType, u);
-            if (type == null) return;                                  // not audio
+            if (type == null) return;
             copyShared(u, extensionFor(type));
         });
     }
@@ -300,7 +279,7 @@ public class MainActivity extends BridgeActivity {
         File out = new File(dir, "co_shared_" + System.currentTimeMillis() + "." + ext);
         try {
             long declared = declaredSize(u);
-            if (declared > MAX_SHARED_BYTES) throw new TooLargeException();        // fail fast, copy nothing
+            if (declared > MAX_SHARED_BYTES) throw new TooLargeException();
             long need = (declared > 0 ? declared : 1024 * 1024) + FREE_SPACE_MARGIN;
             if (dir.getUsableSpace() < need) throw new NoSpaceException();
 
@@ -318,7 +297,7 @@ public class MainActivity extends BridgeActivity {
                 }
             }
             if (total == 0) throw new IOException("empty");
-            if (!tmp.renameTo(out)) throw new IOException("rename failed");        // atomic: readers never see a half file
+            if (!tmp.renameTo(out)) throw new IOException("rename failed");
 
             final String newPath = out.getAbsolutePath();
             final String name = "shared." + ext;
@@ -326,7 +305,7 @@ public class MainActivity extends BridgeActivity {
                 String old = CallBus.sharedPath;
                 CallBus.sharedPath = newPath;
                 CallBus.sharedName = name;
-                if (old != null && !old.equals(newPath)) runIo(() -> new File(old).delete());   // drop the previous recording
+                if (old != null && !old.equals(newPath)) runIo(() -> new File(old).delete());
                 notifyWeb("gkSharedReady", "ok");
             });
         } catch (TooLargeException e) {
@@ -338,7 +317,7 @@ public class MainActivity extends BridgeActivity {
             toast("फोनमा खाली ठाउँ पुगेन");
             notifyWeb("gkSharedError", "no_space");
         } catch (Exception e) {
-            tmp.delete(); out.delete();                                             // never leave a partial / oversized file behind
+            tmp.delete(); out.delete();
             toast("रेकर्डिङ लिन सकिएन, फेरि प्रयास गर्नुहोस्");
             notifyWeb("gkSharedError", "copy_failed");
         }
@@ -349,7 +328,6 @@ public class MainActivity extends BridgeActivity {
         return a != null && a.startsWith(getPackageName());
     }
 
-    /** Returns an audio/* MIME type, or null if the shared item is not audio. (May query a provider: call off the main thread.) */
     private String resolveAudioType(String intentType, Uri u) {
         if (intentType != null && intentType.startsWith("audio/")) return intentType;
         boolean vague = intentType == null || intentType.equals("*/*") || intentType.equals("application/octet-stream");
@@ -371,7 +349,7 @@ public class MainActivity extends BridgeActivity {
         if (m.contains("3gpp") || m.contains("3gp")) return "3gp";
         if (m.contains("aac")) return "aac";
         if (m.contains("webm")) return "webm";
-        return "m4a";                                                   // audio/mp4, audio/x-m4a, unknown
+        return "m4a";
     }
 
     private long declaredSize(Uri u) {
@@ -387,7 +365,7 @@ public class MainActivity extends BridgeActivity {
     // ================================================================= cleanup, feedback, helpers
 
     private void cleanupStaleShared() {
-        File legacy = new File(getCacheDir(), "co_shared.m4a");        // file name used by the old version
+        File legacy = new File(getCacheDir(), "co_shared.m4a");
         if (legacy.exists()) legacy.delete();
         File[] files = new File(getCacheDir(), SHARED_DIR).listFiles();
         if (files == null) return;
@@ -403,7 +381,6 @@ public class MainActivity extends BridgeActivity {
         CallBus.sharedPath = null;
     }
 
-    /** Runs work on the IO thread; never throws into the caller and never lets a task crash the app. */
     private void runIo(Runnable r) {
         try {
             io.execute(() -> {
@@ -420,7 +397,6 @@ public class MainActivity extends BridgeActivity {
         });
     }
 
-    /** Fires a DOM CustomEvent in the web app: window.addEventListener('gkSharedReady' | 'gkSharedError' | 'gkLowMemory', ...). */
     private void notifyWeb(String event, String reason) {
         main.post(() -> {
             if (isFinishing() || isDestroyed()) return;
@@ -439,7 +415,6 @@ public class MainActivity extends BridgeActivity {
 
     // ================================================================= diagnostics
 
-    /** Saves the last uncaught exception to files/last_crash.txt (stack trace only, nothing leaves the phone). */
     private void installCrashLogger() {
         if (crashLoggerInstalled) return;
         crashLoggerInstalled = true;
@@ -455,7 +430,6 @@ public class MainActivity extends BridgeActivity {
         });
     }
 
-    /** Debug builds only: if the main thread does not run a posted task within 4 s, log where it is stuck. */
     private void startWatchdog() {
         lastTick = SystemClock.uptimeMillis();
         final Thread mainThread = Looper.getMainLooper().getThread();
