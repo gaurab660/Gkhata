@@ -7843,10 +7843,7 @@ window.coTime=function(){const v=prompt('Order लिने समय (२४ �
 function ev(o){if(!o||seen.has(o.ts))return;seen.add(o.ts);Q.push(o)}
 function dayOf(){try{return S.day||today()}catch(e){return today()}}
 function has(cid){try{return D.ent.some(e=>e.cid==cid&&e.date==dayOf()&&!e.lvl)}catch(e){return false}}
-function ring(o){if(!o||!o.number||seen.has('r'+o.ts))return;
- if(Date.now()-o.ts>120000)return;
- if(!ready()){setTimeout(()=>ring(o),700);return}
- seen.add('r'+o.ts);if(!win(Date.now()))return;const c=cust(o.number);if(!c)return;
+function ring(o){if(!o||!o.number||seen.has('r'+o.ts))return;seen.add('r'+o.ts);if(!ready()||!win(Date.now()))return;const c=cust(o.number);if(!c)return;
  if(has(c.id)){toast(c.name+' — Order पहिले नै छ');return}
  if(S.m&&S.m.cid==c.id)return;coOpen(c.id,{number:o.number,ts:o.ts,type:1,ring:1})}
 const nm=s=>String(s||'').toLowerCase().replace(/\s+/g,' ').trim(),MQ=(()=>{try{return JSON.parse(localStorage.getItem('co_q')||'[]')}catch(e){return[]}})();let lastA='',blk=0;
@@ -8117,6 +8114,20 @@ window.abkCard=function(){
  +'<div class="s" style="margin-top:10px">Drive बाट डाउनलोड गरेको .gkb File बाट:</div><input type="file" accept=".gkb" onchange="abkFile(this)"></div>'};
 
 window.__abk={pack:pack,unpack:unpack,plan:plan,passSet:passSet,passGet:passGet};
+})();
+</script>
+<script>
+/* Bill PDF: Android WebView <a download> र navigator.share(files) चल्दैन → native GkFile plugin (FilePlugin.java). ब्राउजरमा पुरानै तरिका। */
+(function(){
+const NP=()=>{try{const C=window.Capacitor;return C&&C.isNativePlatform&&C.isNativePlatform()&&C.Plugins&&C.Plugins.GkFile||null}catch(e){return null}};
+const CH=3000000; /* ३ ले भाग जाने (base64 जोड्न मिल्न) */
+const b64=bl=>new Promise((res,rej)=>{const r=new FileReader();r.onload=()=>res(String(r.result).split(',')[1]||'');r.onerror=()=>rej(r.error);r.readAsDataURL(bl)});
+async function put(P,f){let o=0,ap=false;do{await P.put({name:f.name,b64:await b64(f.slice(o,o+CH)),append:ap});o+=CH;ap=true}while(o<f.size)}
+const oSave=window.bSave,oShare=window.bShareF;
+window.bSave=async function(f){const P=NP();if(!P)return oSave.apply(this,arguments);
+ try{await put(P,f);const r=await P.saveCopy({name:f.name});toast('PDF सुरक्षित भयो: '+r.where)}catch(e){alert('PDF सुरक्षित गर्न सकिएन: '+(e&&e.message||e))}};
+window.bShareF=async function(f){const P=NP();if(!P)return oShare.apply(this,arguments);
+ try{const tx=S._btxt;S._btxt=null;await put(P,f);await P.share({name:f.name,text:tx||''})}catch(e){alert('Bill सेयर गर्न सकिएन: '+(e&&e.message||e))}};
 })();
 </script>
 </body></html>
