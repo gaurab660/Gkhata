@@ -31,9 +31,12 @@ public class CallReceiver extends BroadcastReceiver {
             if (newNum) e.putString("ring_num", num);
             e.apply();
             if (newNum) onRing(ctx, num);
+            if (TelephonyManager.EXTRA_STATE_OFFHOOK.equals(st)) CallOverlay.onOffhook(ctx);   // answered: switch the floating bar to "on call"
             return;
         }
         e.remove("ring_num").apply();
+        CallOverlay.hide(ctx);      // call finished / rejected / missed: remove the floating bar
+        if (CallBus.plugin != null) CallBus.plugin.onCallIdle();   // go back to the previous screen if the order was already saved
         if (prev.equals("IDLE")) return;
         final PendingResult pr = goAsync();
         new Thread(() -> {
@@ -59,10 +62,11 @@ public class CallReceiver extends BroadcastReceiver {
         String list = "," + c.getSharedPreferences("co_ring_list", 0).getString("l", "") + ",";
         if (t.length() < 10 || !list.contains("," + t + ",") || !MsgGate.inWindow(c, System.currentTimeMillis())) return;
         try {
-            JSONObject o = new JSONObject().put("number", num).put("ts", System.currentTimeMillis());
+            JSONObject o = new JSONObject().put("number", num).put("ts", System.currentTimeMillis()).put("bg", !CallBus.fg);   // bg = app was NOT on screen when the call came
             c.getSharedPreferences("co_ring_list", 0).edit().putString("ring", o.toString()).apply();
             if (CallBus.plugin != null) CallBus.plugin.ring(o);
         } catch (Exception ignored) {}
+        CallOverlay.showRinging(c, num);   // floating Answer / Decline bar that never gets hidden by the order screen
         if (CallBus.fg) return;
         Intent in = new Intent(c, MainActivity.class).setFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_SINGLE_TOP).putExtra("co_ring", true);
         if (Settings.canDrawOverlays(c)) {          // allowed to start an activity from the background

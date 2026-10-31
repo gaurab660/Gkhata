@@ -12,10 +12,14 @@ import android.provider.Settings;
 import androidx.core.app.ActivityCompat;
 import com.getcapacitor.*;
 import com.getcapacitor.annotation.CapacitorPlugin;
+import com.getcapacitor.annotation.Permission;
+import com.getcapacitor.annotation.PermissionCallback;
 import org.json.*;
 import java.io.*;
 
-@CapacitorPlugin(name = "CallOrder")
+@CapacitorPlugin(name = "CallOrder", permissions = {
+        @Permission(strings = {Manifest.permission.CALL_PHONE}, alias = "callphone")
+})
 public class CallOrderPlugin extends Plugin {
     @Override public void load() { CallBus.plugin = this; }
     @Override protected void handleOnDestroy() { if (CallBus.plugin == this) CallBus.plugin = null; }   // no leaked Activity
@@ -32,7 +36,10 @@ public class CallOrderPlugin extends Plugin {
         JSArray a = c.getArray("numbers", new JSArray());
         StringBuilder sb = new StringBuilder();
         for (int k = 0; k < a.length(); k++) { if (k > 0) sb.append(','); sb.append(a.optString(k)); }
-        getContext().getSharedPreferences("co_ring_list", 0).edit().putString("l", sb.toString()).apply();
+        JSArray nm = c.getArray("names", new JSArray());       // customer names, same order as the numbers (for the floating call bar)
+        StringBuilder sn = new StringBuilder();
+        for (int k = 0; k < nm.length(); k++) { if (k > 0) sn.append('|'); sn.append(nm.optString(k).replace("|", " ")); }
+        getContext().getSharedPreferences("co_ring_list", 0).edit().putString("l", sb.toString()).putString("rn", sn.toString()).apply();
         c.resolve();
     }
 
@@ -113,7 +120,14 @@ public class CallOrderPlugin extends Plugin {
         c.resolve();
     }
 
+    // ANSWER_PHONE_CALLS lets the floating bar answer / end calls (Android 8+)
     private String[] perms() {
+        java.util.ArrayList<String> l = new java.util.ArrayList<>(java.util.Arrays.asList(basePerms()));
+        if (Build.VERSION.SDK_INT >= 26) l.add(Manifest.permission.ANSWER_PHONE_CALLS);
+        return l.toArray(new String[0]);
+    }
+
+    private String[] basePerms() {
         return Build.VERSION.SDK_INT >= 33
                 ? new String[]{Manifest.permission.READ_PHONE_STATE, Manifest.permission.READ_CALL_LOG,
                 Manifest.permission.POST_NOTIFICATIONS, Manifest.permission.READ_MEDIA_AUDIO, Manifest.permission.RECORD_AUDIO,
@@ -167,6 +181,76 @@ public class CallOrderPlugin extends Plugin {
         catch (Exception e) {                                   // some phones lack that screen: open the app info page instead
             try { getActivity().startActivity(new Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, pkg)); } catch (Exception ignored) {}
         }
+        c.resolve();
+    }
+
+    // ---- Direct call: rings straight away (ACTION_CALL) instead of only opening the dialer ----
+    // Needs CALL_PHONE (asked once, on the first direct call). If it is refused the JS side falls back to the normal dialer.
+    private static String cleanNumber(String n) { return n == null ? "" : n.replaceAll("[^0-9+]", ""); }
+
+    @PluginMethod public void directCall(PluginCall c) {
+        String num = cleanNumber(c.getString("number", ""));
+        if (num.length() < 5) { c.reject("bad_number"); return; }
+        if (getContext().checkSelfPermission(Manifest.permission.CALL_PHONE) != PackageManager.PERMISSION_GRANTED) {
+            requestPermissionForAlias("callphone", c, "directCallPerm");
+            return;
+        }
+        placeCall(c, num);
+    }
+
+    @PermissionCallback
+    private void directCallPerm(PluginCall c) {
+        if (getContext().checkSelfPermission(Manifest.permission.CALL_PHONE) == PackageManager.PERMISSION_GRANTED)
+            placeCall(c, cleanNumber(c.getString("number", "")));
+        else c.reject("denied");
+    }
+
+    private void placeCall(PluginCall c, String num) {
+        try {
+            Intent i = new Intent(Intent.ACTION_CALL, Uri.fromParts("tel", num, null));
+            i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+            getContext().startActivity(i);
+            c.resolve();
+        } catch (SecurityException e) { c.reject("denied"); }
+        catch (Exception e) { c.reject("fail"); }
+    }
+
+    // ---- Leave the app (back to the previous screen) once an order taken during a call is saved ----
+    // The web app calls backWhenDone() after the save. If the call is still going on we wait for it to end
+    // (CallReceiver calls onCallIdle), so the caller's in-call screen is never taken away mid-call.
+    private static volatile boolean backPending = false;
+
+    @android.annotation.SuppressLint("MissingPermission")
+    private boolean callIdle() {
+        try {
+            return ((android.telephony.TelephonyManager) getContext().getSystemService(Context.TELEPHONY_SERVICE)).getCallState()
+                    == android.telephony.TelephonyManager.CALL_STATE_IDLE;
+        } catch (Exception e) { return true; }
+    }
+
+    private void goBackNow() {
+        backPending = false;
+        try {
+            final Activity a = getActivity();
+            if (a != null) a.runOnUiThread(() -> { try { a.moveTaskToBack(true); } catch (Exception ignored) {} });
+        } catch (Exception ignored) {}
+    }
+
+    void onCallIdle() { if (backPending) goBackNow(); }
+
+    @PluginMethod public void backWhenDone(PluginCall c) {
+        if (callIdle()) goBackNow(); else backPending = true;
+        c.resolve();
+    }
+
+    @PluginMethod public void cancelBack(PluginCall c) { backPending = false; c.resolve(); }
+
+    // ---- Business-hours keep-alive (see KeepAlive.java): the web app sets on/off and the hour window ----
+    @PluginMethod public void setKeepAlive(PluginCall c) {
+        int f = Math.max(0, Math.min(23, c.getInt("from", 16))), t = Math.max(0, Math.min(23, c.getInt("to", 22)));
+        getContext().getSharedPreferences("co_keep", 0).edit()
+                .putBoolean("on", c.getBoolean("on", true)).putInt("from", f).putInt("to", t).apply();
+        KeepAlive.apply(getContext());
         c.resolve();
     }
 
