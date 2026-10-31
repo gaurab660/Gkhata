@@ -32,8 +32,8 @@ public class WaListener extends NotificationListenerService {
         CharSequence t0 = x.getCharSequence(Notification.EXTRA_TITLE);
         if (t0 == null) return;
         String title = t0.toString().replaceAll("\\s*\\(\\d+ messages?\\)$", "").trim();
-        if (!MsgGate.knownTitle(this, title)) return;                                            // not a saved customer: ignore
-        String number = MsgGate.numberFor(this, title);
+        String number = MsgGate.numberFor(this, title);                                          // strict: must resolve to a listed number
+        if (number.isEmpty()) return;                                                            // unknown / ambiguous sender: ignore completely
         Parcelable[] ms = x.getParcelableArray(Notification.EXTRA_MESSAGES);
         if (ms != null && ms.length > 0) {                                                       // all unread messages of the chat
             for (Parcelable p : ms) {

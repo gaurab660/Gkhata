@@ -127,6 +127,7 @@ public class MainActivity extends BridgeActivity {
     @Override public void onResume() {
         super.onResume();
         CallBus.fg = true;
+        MsgOverlay.hide(this);
         if (pendingRecover) {
             pendingRecover = false;
             recoverWebView();

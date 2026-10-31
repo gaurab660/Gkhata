@@ -77,6 +77,9 @@ public final class CallOverlay {
         } catch (Throwable ignored) {}
     }
 
+    /** true while the call bar / on-call pill is on screen (message card waits so the two never overlap). */
+    public static boolean active() { return mode != NONE; }
+
     // ---------------------------------------------------------------- window handling
     private static void render(int m) {
         remove();

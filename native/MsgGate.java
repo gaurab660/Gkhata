@@ -36,34 +36,30 @@ public class MsgGate {
         String t = tail(n);
         return t.length() == 10 && ("," + sp(c).getString("all", "") + ",").contains("," + t + ",");
     }
-    static boolean nameOk(Context c, String n) {
-        return n != null && ("|" + sp(c).getString("names", "") + "|").contains("|" + n.toLowerCase().trim() + "|");
-    }
-
-    // WhatsApp shows the contact name (or the number when unsaved) as the title
-    static boolean knownTitle(Context c, String title) {
-        if (title == null || title.trim().isEmpty()) return false;
-        String d = title.replaceAll("[^0-9]", "");
-        if (d.length() >= 10 && d.length() >= title.replaceAll("\\s", "").length() - 3) return numOk(c, title);
-        if (nameOk(c, title)) return true;
-        if (c.checkSelfPermission(Manifest.permission.READ_CONTACTS) != PackageManager.PERMISSION_GRANTED) return false;
-        try (Cursor q = c.getContentResolver().query(ContactsContract.CommonDataKinds.Phone.CONTENT_URI,
-                new String[]{ContactsContract.CommonDataKinds.Phone.NUMBER},
-                ContactsContract.CommonDataKinds.Phone.DISPLAY_NAME + "=?", new String[]{title.trim()}, null)) {
-            while (q != null && q.moveToNext()) if (numOk(c, q.getString(0))) return true;
-        } catch (Exception ignored) {}
-        return false;
-    }
+    // STRICT identification. A message is accepted only when its sender resolves to a phone number that is saved
+    // in the customer list. Names alone are never trusted.
+    //  - SMS: the sender number itself (last 10 digits) must be in the list.
+    //  - WhatsApp: the title is either a number (unsaved contact) -> same check, or a contact name -> the name must
+    //    belong to exactly ONE phone contact (duplicate names are rejected) and that contact must own a listed number.
+    static boolean knownTitle(Context c, String title) { return !numberFor(c, title).isEmpty(); }
 
     static String numberFor(Context c, String title) {
-        if (title != null && tail(title).length() == 10 && title.replaceAll("[^0-9]", "").length() >= 10) return title;
+        if (title == null || title.trim().isEmpty()) return "";
+        String d = title.replaceAll("[^0-9]", "");
+        if (d.length() >= 10 && d.length() >= title.replaceAll("\\s", "").length() - 3)      // title is a phone number
+            return numOk(c, title) ? title : "";
         if (c.checkSelfPermission(Manifest.permission.READ_CONTACTS) != PackageManager.PERMISSION_GRANTED) return "";
+        String hit = "";
+        java.util.Set<String> ids = new java.util.HashSet<>();
         try (Cursor q = c.getContentResolver().query(ContactsContract.CommonDataKinds.Phone.CONTENT_URI,
-                new String[]{ContactsContract.CommonDataKinds.Phone.NUMBER},
+                new String[]{ContactsContract.CommonDataKinds.Phone.NUMBER, ContactsContract.CommonDataKinds.Phone.CONTACT_ID},
                 ContactsContract.CommonDataKinds.Phone.DISPLAY_NAME + "=?", new String[]{title.trim()}, null)) {
-            while (q != null && q.moveToNext()) if (numOk(c, q.getString(0))) return q.getString(0);
-        } catch (Exception ignored) {}
-        return "";
+            while (q != null && q.moveToNext()) {
+                ids.add(q.getString(1));
+                if (hit.isEmpty() && numOk(c, q.getString(0))) hit = q.getString(0);
+            }
+        } catch (Exception ignored) { return ""; }
+        return ids.size() == 1 ? hit : "";            // two different contacts with the same name -> cannot tell who wrote
     }
 
     static void deliver(Context c, String src, String from, String number, String text, long mt) {
@@ -81,6 +77,7 @@ public class MsgGate {
             p.edit().putString("l", b.toString()).apply();
             if (CallBus.plugin != null) CallBus.plugin.msg(o);
             if (CallBus.fg) return;
+            if (MsgOverlay.show(c, src, from, text)) return;     // floating card on top; plain notification only if it cannot be shown
             NotificationManager nm = (NotificationManager) c.getSystemService(Context.NOTIFICATION_SERVICE);
             if (Build.VERSION.SDK_INT >= 26)
                 nm.createNotificationChannel(new NotificationChannel("co_msg", "Customer messages", NotificationManager.IMPORTANCE_HIGH));

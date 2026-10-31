@@ -65,6 +65,11 @@ public class CallOrderPlugin extends Plugin {
         c.resolve();
     }
 
+    @PluginMethod public void setMsgPopup(PluginCall c) {
+        getContext().getSharedPreferences("co_ring_list", 0).edit().putBoolean("pop", c.getBoolean("on", true)).apply();
+        c.resolve();
+    }
+
     @PluginMethod public void getMsgs(PluginCall c) {
         SharedPreferences sp = getContext().getSharedPreferences("co_msgs", 0);
         JSObject r = new JSObject();
