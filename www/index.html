@@ -8110,10 +8110,18 @@ window.coTime=function(){const v=prompt('Order लिने समय (२४ �
 function ev(o){if(!o||seen.has(o.ts))return;seen.add(o.ts);Q.push(o)}
 function dayOf(){try{return S.day||today()}catch(e){return today()}}
 function has(cid){try{return entsOf(cid).some(e=>e.date==dayOf()&&!e.lvl)}catch(e){return false}}
-function ring(o){if(!o||!o.number||seen.has('r'+o.ts))return;seen.add('r'+o.ts);if(!ready()||!win(Date.now()))return;const c=cust(o.number);if(!c)return;
- if(S.m&&S.m.cid==c.id)return;
+function cands(num){const n=dg(num).slice(-10);if(n.length<10)return[];try{return D.cust.filter(c=>phsOf(c).some(p=>dg(p).slice(-10)==n))}catch(e){return[]}}
+function ringGo(c,o){if(S.m&&S.m.cid==c.id)return;
  if(has(c.id))toast(c.name+' — आजको Order पहिले नै छ, थप Order टिप्न सकिन्छ');
  coOpen(c.id,{number:o.number,ts:o.ts,type:1,ring:1});if(o.bg&&S.m&&S.m.cid==c.id)armBack(c.id,o.number)}
+let RP=null;
+window.coPick=function(i){const m=document.querySelector('.mod');if(m)m.remove();if(RP&&RP.L[i])ringGo(RP.L[i],RP.o);RP=null};
+function ring(o){if(!o||!o.number||seen.has('r'+o.ts))return;
+ if(!ready()){if(!o._w)o._w=Date.now();if(Date.now()-o._w<15000)setTimeout(()=>ring(o),200);return}   /* एप अझै खुल्दै छ: कल नगुमाई डाटा आउन पर्खने */
+ seen.add('r'+o.ts);if(!win(Date.now()))return;
+ const L=cands(o.number);if(!L.length)return;
+ if(L.length>1){RP={L:L,o:o};modal('<h2>📞 '+esc(o.number)+'</h2><div class="s">यो नम्बर एकभन्दा बढी Customerमा दर्ता छ। को हो छान्नुहोस्:</div>'+L.map((c,i)=>'<button class="b" style="width:100%;margin:6px 0;font-size:17px" onclick="coPick('+i+')">'+esc(c.name)+'</button>').join(''),()=>{RP=null},'बन्द');return}
+ ringGo(L[0],o)}
 /* कलले एप आफैँ खोलेको थियो भने: Order सुरक्षित भएपछि (कल सकिएपछि) एप पछाडि जान्छ, एपमै अड्किँदैन */
 let BK=null;
 const backOn=()=>localStorage.getItem('co_back')!=='0';
@@ -8190,6 +8198,7 @@ window.coKey=function(){const k=prompt('Speech-to-text API Key (खाली छ
 window.coSetup=async function(again){if(!CP)return;const s=await CP.checkSetup();
  if(s.restricted&&!s.perms&&!localStorage.getItem('co_rs')){localStorage.setItem('co_rs','1');if(confirm('पहिलो काम: Android 13+ ले Play Store बाहिरबाट राखेको एपका SMS/कल लग/Notification अनुमति रोक्छ।\n\nअब खुल्ने App info मा माथि दायाँ ⋮ (तीन थोप्ला) थिचेर "Allow restricted settings" छान्नुहोस्, अनि फर्केर फेरि "फोन सेटअप जाँच" थिच्नुहोस्।')){CP.openSettings({kind:'app'});return}}
  const T=[['perms','फोन, कल लग, SMS, सम्पर्क र माइक अनुमति',()=>again?CP.openSettings({kind:'app'}):CP.requestAll()],
+  ['screen','Call screening app (कल आउँदा/गर्दा बज्नुअघि नै नम्बर पहिचान — सबैभन्दा छिटो)',()=>CP.requestScreening()],
   ['overlay','Display over other apps (फोन आउँदा Order आफैं खुल्न)',()=>CP.openSettings({kind:'overlay'})],
   ['fsi','Full-screen notifications (Android 14+: Overlay नचल्दा फोन आउँदा Order देखाउन)',()=>CP.openSettings({kind:'fsi'})],
   ['notif','Notification access (WhatsApp सन्देश पढ्न)',()=>CP.openSettings({kind:'notif'})],
@@ -8198,7 +8207,8 @@ window.coSetup=async function(again){if(!CP)return;const s=await CP.checkSetup()
  if(confirm('बाँकी ('+miss.length+'):\n'+miss.map(x=>'• '+x[1]).join('\n')+'\n\nअब पहिलो खोल्ने?')){window.__coWiz=1;await miss[0][2]()}else window.__coWiz=0};
 document.addEventListener('visibilitychange',()=>{if(!document.hidden&&window.__coWiz)setTimeout(()=>coSetup(1),800)});
 window.coPanel=function(){const m=S.m,sh=m&&m.aud;
- return '<div class="card" style="margin:8px 0"><div class="s">फोन रेकर्डिङ / आवाजबाट Order'+(m&&m.co?' · '+esc(m.co.number):'')+'</div>'+
+ let bn='';try{const cc=m&&m.co&&m.cid?D.cust.find(x=>x.id==m.cid):null;if(cc){const wh=phWho(cc,m.co.number);bn='<div style="background:#0F6E56;color:#fff;border-radius:10px;padding:10px 12px;margin:8px 0;font-size:19px;font-weight:700;overflow-wrap:anywhere">📞 '+esc(cc.name)+(wh?' <span style="font-weight:400;font-size:15px">('+esc(wh)+')</span>':'')+'<div style="font-size:14px;font-weight:400">'+esc(m.co.number)+'</div></div>'}}catch(e){}
+ return bn+'<div class="card" style="margin:8px 0"><div class="s">फोन रेकर्डिङ / आवाजबाट Order'+(m&&m.co?' · '+esc(m.co.number):'')+'</div>'+
  (m&&m.busy?'<div class="s" style="margin:6px 0">आवाज पढ्दै छ… कृपया पर्खनुहोस्</div>':'')+
  (sh?'<button class="b" style="width:100%;margin:6px 0" onclick="coRead()">रेकर्डिङबाट Order पढ्ने</button>':'')+
  '<div class="row" style="gap:6px;margin-top:6px"><button class="b g" style="flex:1" onclick="coMic()">'+(REC?'रोक्नुहोस् र पढ्नुहोस्':'बोलेर रेकर्ड')+'</button>'+
@@ -8212,7 +8222,7 @@ async function poll(){if(!CP)return;try{const r=await CP.getPending();(r.items||
  if(s&&s.path&&ready()&&!busy()){S.m={text:'',cid:null,rows:null,aud:{path:s.path,name:s.name}};render();if(KEY)coRead()}}catch(e){}}
 async function pollRing(){if(!CP)return;try{ring(await CP.getRing())}catch(e){}}
 if(CP){CP.addListener('callEnded',ev);CP.addListener('ringing',ring);CP.addListener('msgIn',mev);document.addEventListener('visibilitychange',()=>{if(!document.hidden){pollRing();poll();pollMsg()}else pushList()});
- setTimeout(()=>{pollRing();poll();pollMsg();pushList()},1200);setInterval(pushList,15000)}
+ {let n=0;const t=setInterval(()=>{if(ready()||++n>60){clearInterval(t);pollRing();poll();pollMsg();pushList()}},100)}setInterval(pushList,2000)}
 setInterval(()=>{try{mflush()}catch(e){}},1500);
 setInterval(()=>{try{flush()}catch(e){}},1500);
 })();
