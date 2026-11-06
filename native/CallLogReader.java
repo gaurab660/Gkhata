@@ -23,6 +23,7 @@ public class CallLogReader {
             if (q == null || !q.moveToFirst()) return false;
             String num = q.getString(0) == null ? "" : q.getString(0);
             if (num.isEmpty() || !MsgGate.inWindow(c, q.getLong(3))) return true;
+            if (!MsgGate.numOk(c, num)) return true;      // not a saved customer: store nothing, notify nothing
             JSONObject o = new JSONObject();
             o.put("number", num).put("type", q.getInt(1)).put("dur", q.getInt(2)).put("ts", q.getLong(3));
             SharedPreferences sp = c.getSharedPreferences("co_pending", 0);
@@ -34,7 +35,7 @@ public class CallLogReader {
             a.put(o);
             sp.edit().putString("l", a.toString()).apply();
             if (CallBus.plugin != null) CallBus.plugin.fire(o);
-            if (!CallBus.fg) notify(c, num, q.getInt(1));
+            if (!CallBus.fg && c.getSharedPreferences("co_state", 0).getLong("opened", 0) < t0 - 60000) notify(c, num, q.getInt(1));   // order screen was already opened at call start -> no late notification
             return true;
         } catch (Exception ignored) {
             return true;

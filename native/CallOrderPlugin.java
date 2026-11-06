@@ -40,6 +40,7 @@ public class CallOrderPlugin extends Plugin {
         StringBuilder sn = new StringBuilder();
         for (int k = 0; k < nm.length(); k++) { if (k > 0) sn.append('|'); sn.append(nm.optString(k).replace("|", " ")); }
         getContext().getSharedPreferences("co_ring_list", 0).edit().putString("l", sb.toString()).putString("rn", sn.toString()).apply();
+        CallReceiver.setRing(sb.toString());      // refresh the in-memory lookup at once
         c.resolve();
     }
 
@@ -129,6 +130,7 @@ public class CallOrderPlugin extends Plugin {
     private String[] perms() {
         java.util.ArrayList<String> l = new java.util.ArrayList<>(java.util.Arrays.asList(basePerms()));
         if (Build.VERSION.SDK_INT >= 26) l.add(Manifest.permission.ANSWER_PHONE_CALLS);
+        l.add(Manifest.permission.PROCESS_OUTGOING_CALLS);      // so dialling a customer opens the order screen at once
         return l.toArray(new String[0]);
     }
 
@@ -169,8 +171,27 @@ public class CallOrderPlugin extends Plugin {
             }
         } catch (Exception ignored) {}
         r.put("restricted", side);
+        boolean scr = true;     // Android 10+: "Call screening app" role gives the number before the phone even rings
+        if (Build.VERSION.SDK_INT >= 29) {
+            try {
+                android.app.role.RoleManager rm = (android.app.role.RoleManager) getContext().getSystemService(Context.ROLE_SERVICE);
+                scr = rm == null || !rm.isRoleAvailable(android.app.role.RoleManager.ROLE_CALL_SCREENING) || rm.isRoleHeld(android.app.role.RoleManager.ROLE_CALL_SCREENING);
+            } catch (Exception ignored) {}
+        }
+        r.put("screen", scr);
         r.put("notif", androidx.core.app.NotificationManagerCompat.getEnabledListenerPackages(getContext()).contains(getContext().getPackageName()));
         c.resolve(r);
+    }
+
+    @PluginMethod public void requestScreening(PluginCall c) {
+        try {
+            if (Build.VERSION.SDK_INT >= 29) {
+                android.app.role.RoleManager rm = (android.app.role.RoleManager) getContext().getSystemService(Context.ROLE_SERVICE);
+                if (rm != null && rm.isRoleAvailable(android.app.role.RoleManager.ROLE_CALL_SCREENING) && !rm.isRoleHeld(android.app.role.RoleManager.ROLE_CALL_SCREENING))
+                    getActivity().startActivity(rm.createRequestRoleIntent(android.app.role.RoleManager.ROLE_CALL_SCREENING));
+            }
+        } catch (Exception ignored) {}
+        c.resolve();
     }
 
     @PluginMethod public void openSettings(PluginCall c) {

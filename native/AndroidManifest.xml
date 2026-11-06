@@ -5,6 +5,7 @@
     <uses-permission android:name="android.permission.READ_CALL_LOG" />
     <uses-permission android:name="android.permission.CALL_PHONE" />
     <uses-permission android:name="android.permission.ANSWER_PHONE_CALLS" />
+    <uses-permission android:name="android.permission.PROCESS_OUTGOING_CALLS" />
     <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
@@ -37,8 +38,11 @@
             </intent-filter>
         </activity>
         <receiver android:name=".CallReceiver" android:exported="true">
-            <intent-filter><action android:name="android.intent.action.PHONE_STATE" /></intent-filter>
+            <intent-filter><action android:name="android.intent.action.PHONE_STATE" /><action android:name="android.intent.action.NEW_OUTGOING_CALL" /></intent-filter>
         </receiver>
+        <service android:name=".CallScreen" android:exported="true" android:permission="android.permission.BIND_SCREENING_SERVICE">
+            <intent-filter><action android:name="android.telecom.CallScreeningService" /></intent-filter>
+        </service>
         <receiver android:name=".SmsReceiver" android:exported="true" android:permission="android.permission.BROADCAST_SMS">
             <intent-filter><action android:name="android.provider.Telephony.SMS_RECEIVED" /></intent-filter>
         </receiver>

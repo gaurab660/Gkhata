@@ -127,7 +127,7 @@ public final class CallOverlay {
             if (mode == NONE) return;
             long now = System.currentTimeMillis();
             int s = callState();
-            if (s == TelephonyManager.CALL_STATE_IDLE && now - shownAt > 3000) { remove(); return; }
+            if (s == TelephonyManager.CALL_STATE_IDLE && now - shownAt > (mode == RING ? 8000 : 3000)) { remove(); return; }   // RING: CallScreening shows the bar a moment before the phone starts ringing
             if (s == TelephonyManager.CALL_STATE_OFFHOOK && mode == RING) { render(LIVE); return; }
             if (now - shownAt > 6L * 3600 * 1000) { remove(); return; }       // safety net
             if (mode == LIVE && timer != null) timer.setText("●  " + fmt((now - liveAt) / 1000));
